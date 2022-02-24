@@ -1,0 +1,2857 @@
+#svl
+// rf_interactions.svl		calculate statistically relevant interations
+//	21-May-2021 (at) Additional columns for MDB, binned RF values
+//	19-mar-2021 (rb) fixed killing all MOE task when running twice
+//	06-jan-2021 (rb) added saveable settings
+//	10-dec-2020 (at) switched opt.render_sp_radius_f and opt.render_sp_radius 
+//			 default values
+//	08-dec-2020 (rb) added GUI for db_RF_Interactions
+//	11-nov-2020 (rb) added PLIF
+//			 added mean scores over trajectory/docking of same mol.
+//	22-oct-2020 (rb) added color gradients
+//	21-oct-2020 (rb) added dummy functions for score sphere color and radius
+//	21-oct-2020 (rb) GSetName [PRIVATE]* to prevent saving of gobj
+//	21-oct-2020 (at) changed colors, changed rf_score calculation
+//			 interactions displayed by default
+//	16-oct-2020 (rb) multiple fixes wrt. MOE <-> panel selection syncro
+//	15-oct-2020 (rb) added score labels; modified window behaviour
+//	15-oct-2020 (rb) fixed typo; added line-of-sight edge case
+//	15-oct-2020 (at) change RF_total calculation for sp3 atoms
+//	02-oct-2020 (rb) get window values on window timeout (= no win trigger)
+//	28-sep-2020 (rb) added score rendering; switched to SystemNonrenderState
+//	12-sep-2020 (rb) implemented RF based scores
+//	20-aug-2020 (at) Fixed bug were interaction type vector was a dictionary
+//			 and interaction types were not assigned
+//	05-aug-2020 (at) Consider "pi" flag for distance to plane calculations for
+//			 ligand and receptor
+//	23-jul-2020 (at) Include water contacts
+//	23-jul-2020 (at) RF values are considered for interaction type assignment
+//	21-jul-2020 (at) add forbidden interaction types to interaction type assignment
+//	20-jul-2020 (at) assign interaction types
+//	17-jul-2020 (at) angles no longer calculated for hydrogen
+//	22-jun-2020 (at) type_atoms is now global
+//	18-jun-2020 (at) disable lone pair clash
+//	09-jun-2020 (rb) gobj made private to avoid saving in MOE files
+//			 task_prio and checkpoints to ensure validity of obj.
+//	02-jun-2020 (rb) reworked line rendering
+//	29-may-2020 (rb) DB function takes into account all active rec atoms
+//	27-may-2020 (rb) fixed Scale widget in old MOE; added max SLIDER_MAX_RF
+//	26-may-2020 (rb) minor fixes for data caching
+//	25-may-2020 (rb) added caching; minor changes
+//	13-may-2020 (rb) interaction typing by ligand and receptor atom types
+//	11-may-2020 (rb) removed SMARTS processing (assume to be MOE compatible)
+//	14-apr-2020 (rb) added DB mode, added comments, synchronized GSel
+//	13-apr-2020 (rb) fixed error propagation
+//	07-apr-2020 (rb) added labels, RF filter, auto-enable clashes
+//	06-apr-2020 (rb) added panel
+//	31-mar-2020 (rb) created
+//
+// COPYRIGHT (C) 2020 CHEMICAL COMPUTING GROUP ULC ("CCG").
+// ALL RIGHTS RESERVED.
+//
+// PERMISSION TO USE, COPY, MODIFY AND DISTRIBUTE THIS SOFTWARE IS HEREBY
+// GRANTED PROVIDED THAT: (1) UNMODIFIED OR FUNCTIONALLY EQUIVALENT SOFTWARE
+// DERIVED FROM THIS SOFTWARE MUST CONTAIN THIS NOTICE; (2) ALL CODE DERIVED
+// FROM THIS SOFTWARE MUST ACKNOWLEDGE THE AUTHOR(S) AND INSTITUTION(S); (3)
+// THE NAMES OF THE AUTHOR(S) AND INSTITUTION(S) NOT BE USED IN ADVERTISING
+// OR PUBLICITY PERTAINING TO THIS SOFTWARE WITHOUT SPECIFIC WRITTEN PRIOR
+// PERMISSION; (4) ALL CODE DERIVED FROM THIS SOFTWARE BE EXECUTED WITH THE
+// MOLECULAR OPERATING ENVIRONMENT LICENSED FROM CCG.
+//
+// CCG DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE, INCLUDING
+// ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, AND IN NO EVENT
+// SHALL CCG BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR
+// ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+// IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+// OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+#set title	'RF Interactions'
+#set class	'CCG:Support'
+#set version	'2020.10'
+#set main	'RF_Interactions_Button'
+
+//? TODO: the state triggers do not work as expected:
+// - setting ligand manually will not trigger state 5 (monitor sets)
+
+
+const DEFAULTS = [
+
+	// Location of lookup CSV files.
+	// The parsed XML data will be cached in opt.cache_file .
+
+    f_atypes_rec	: 'protein_atom_types.csv',
+    f_atypes_lig	: 'ligand_atom_types.csv',
+    f_itypes_rec_a	: 'global_protein_lookup_alpha.csv',
+    f_itypes_rec_h	: 'global_protein_lookup_h.csv',
+    f_itypes_lig_a	: 'global_ligand_lookup_alpha.csv',
+    f_itypes_lig_h	: 'global_ligand_lookup_h.csv',
+
+    cache_file		: 'rf_interactions_data.gz',
+
+	// Interaction bins with #expected < n will be set to:
+	// RF = 1, RF_err = 0.
+
+    min_expected	: 10,
+
+	// Filter options for LoS interactions.
+
+    env_radius		: 6,	// active site definition
+    int_margin		: 0.5,	// sum vdW radii + x
+
+	// Rendering options (faint = low significance).
+
+    render_tt_radius	: 0.04,	// radius of TicTac
+    render_tt_radius_f	: 0.01,	// radius of faint TicTacs
+    render_tt_dashlen	: 0.1,	// length of TicTacs
+    render_tt_dashlen_f	: 0.03,	// length of faint TicTacs
+    render_tt_gaplen	: 0.2,	// length of gaps between TicTacs
+    render_tt_gaplen_f	: 0.07,	// length of gaps between faint TicTacs
+
+    render_sp_radius	: 0.4,	// radius of atom score spheres
+    render_sp_radius_f	: 0.22,	// radius of atom faint score spheres
+    render_sp_transp	: 124,	// transparency of score spheres {0...255}
+
+    render_quality	: 2,	// render quality (higher = better quality)
+			// [[upper RF limits],[colors]]
+    render_colors_tt	: [[0.9, 1.1, Inf], [0xff2052, 0xCDCDCD, 0x007fff]],
+    render_colors_sp	: [0xff2052, 0xCDCDCD, 0x007fff],// (RFs = [0.5, 1, 2])
+    render_color_dbg	: 0x00ff00,// color of debugging objects
+
+	// General GUI and monitor settings.
+
+    monitor_throttle	: 0.05,	// time between system checks (in seconds)
+    show_gui		: 1,	// show/hide GUI
+
+	// Values of window widgets when GUI is opened.
+
+    gui_defaults	: [
+	RF_neg		: 0.0,
+	RF_pos		: 0.0,
+	ilabels		: 'RF',
+	slabels		: 'RF',
+	render_interact	: 1,
+	render_scores	: 1
+    ],
+
+	// Database code options - newly created fields.
+	// .db_ligfield		input db field of ligand
+	// .db_recfield		input db field of receptor
+	//			if opt.db_recfield == ''
+	//			  receptor is in MOE window
+	//			if opt.db_ligfield == opt.db_recfield
+	//			  receptor in same field as ligand
+	//			  (field is NOT loaded twice)
+	// .db_posfield		output db field # positive interactions
+	// .db_negfield		output db field # negative interactions
+	// .db_atomscores	output db field of atom scores
+	//			  same order as atoms in opt.db_ligfield
+
+    db_ligfield		: 'mol',
+    db_recfield		: 'mol',
+    db_posfield		: 'RF_Interact_#+',
+    db_negfield		: 'RF_Interact_#-',
+    db_atomscores	: 'RF_aScores',
+
+	// The PLIF bit is set if for the specific
+	// combination of [receptor_residue, ligand] :
+	// abs log2 mul rfs > opt.plif_cutoff
+
+    plif_cutoff		: 0.3,
+
+    score_average_file	: 'score_average.moe'
+];
+
+// DEBUG_*:
+// WRITE: write information (timings and warnings)
+// PANEL: excessive information in the panel
+// DVAR	: write *dvar to global csv_data
+// GUI_STATES: write the states of the monitor
+const DEBUG_WRITE	= 2;
+const DEBUG_PANEL	= 1;
+const DEBUG_DVAR	= 0;
+const DEBUG_GUI_STATES	= 0;
+// ZIP_CACHE: gzip the cached data.
+const ZIP_CACHE		= 0;
+// Maximum RF value for filter Scale widget.
+const SLIDER_MAX_RF	= 7;
+const RC_NAME		= 'rf_interactions.gui.config';
+
+#if DEBUG_DVAR
+global csv_data;
+#endif
+
+// CSV file field delimeter as single character string.
+const CSV_DELIMETER = "\t";
+// CSV file in-field delimeter (split field again).
+const CSV_DELIMETER2 = ";";
+// Data type of CSV columns.
+const CSV_DATATYPE = [
+    MOE_SMARTS		: 'SMARTS',
+
+    MOE_SMARTS_index	: 'inc int delim',// increment int, split again
+
+    protein_atom_type	: 'token',
+    ligand_atom_type	: 'token',
+    atom_type		: 'token',
+    pi_atom		: 'int',
+    atomic_symbol	: 'token',
+    contact_atom	: 'token',
+
+    h_min		: 'float',
+    h_max		: 'float',
+    alpha_min		: 'float',
+    alpha_max		: 'float',
+    expected		: 'float',
+    hits		: 'int',
+    rf			: 'float',
+    rf_high		: 'float',
+    rf_low		: 'float',
+    size		: 'int',
+    type		: 'token',
+    interaction_types	: 'token delim'
+];
+
+// Read out these CSV columns.
+const CSV_TAGS_ATYPE_LIG = [
+    'ligand_atom_type',	// name (ID)
+    'MOE_SMARTS',	// SMARTS
+    'MOE_SMARTS_index',	// SMARTS index
+    'contact_atom',	// element
+    'pi_atom'
+];
+const CSV_TAGS_ATYPE_REC = [
+    'protein_atom_type', 'MOE_SMARTS', 'MOE_SMARTS_index', 'atomic_symbol'
+];
+const CSV_TAGS_PAIRS_A = ['ligand_atom_type', 'atom_type'];
+const CSV_TAGS_PAIRS_H = CSV_TAGS_PAIRS_A;
+const CSV_TAGS_BINS_A = [
+    'alpha_min', 'alpha_max', 'rf', 'expected', 'rf_low', 'rf_high', 'interaction_types'
+];
+const CSV_TAGS_BINS_H = [
+    'h_min', 'h_max', 'rf', 'expected', 'rf_low', 'rf_high', 'interaction_types'
+];
+
+
+// Atom radii from training algorithm.
+// Used for line-of-sight and interaction distance cutoff.
+const BONDI_RADII = [
+    H	: 1.2, // hydrogens are ignored for reproducibility
+    C	: 1.7,
+    N	: 1.55,
+    O	: 1.52,
+    F	: 1.47,
+    P	: 1.8,
+    S	: 1.8,
+    Cl	: 1.75,
+    Br	: 1.85,
+    I	: 1.98
+];
+
+// Title of the monitor task.
+const TASK_TITLE = 'RF Interactions';
+
+// State of the Contacts clash matrix while the monitor is running.
+const NB_CLASH = 131616;
+
+// Angle cutoff for primary interactions.
+const PRIMARY_INTERACT_ANGLE = 45; //deg
+
+// The data is read from the lookup CSV files and stored in a non-redundant
+// data structure. The data is stored in a dvar.
+//
+// The dvar contains data to type the protein atoms as well as interaction
+// data.
+// *dvar = [
+//	atypes_rec: <protein_atom_types>,
+//	itypes: <interaction_types>
+// ]
+//
+// Each receptor atom type is defined by an identifier, SMARTS and an index
+// of the atom in the macthed SMARTS. Multiple indices describe multiple
+// atoms within the same SMARTS.
+// <protein_atom_types> = [
+//	['atomtype_1'	, 'atomtype_2'	  , ...],
+//	['SMARTS_1'	, 'SMARTS_2'	  , ...],
+//	[idx1		, [idx2_1, idx2_1], ...]
+// ]
+//
+// Each interaction has a type definition and a table of bins containing data
+// for given interaction type if it adapts a geometry within a specific bin.
+// <interaction_types> = [
+//	[<interaction_type_1>, <interaction_type_2>, ...],
+//	[<interaction_bins_1>, <interaction_bins_2>, ...]
+// ]
+//
+// An interaction is defined by its protein atom type, the ligand SMARTS and
+// the ligand SMARTS atom index.
+// <interaction_type> = ['protein_atype1', 'ligand_atype1']
+//
+// Each bin table contains 4 separate subtables (order see const below).
+// <interaction_bins> = [
+//	<receptor_alpha_bins>, <receptor_h_bins>,
+//	<ligand_alpha_bins>  , <ligand_h_bins>
+// ]
+//
+// Each bin subtable has the same structure (order see const below).
+// Every bin is defined by its lower and upper boundary, an RF value
+// and RF_error
+// (Note that alpha boundary units are in Deg; h units in Angstrom)
+// *_bins = [
+//	[lower_bin1	, lower_bin2	, ...],
+//	[upper_bin1	, upper_bin2	, ...],
+//	[rf_bin1	, rf_bin2	, ...],
+//	[error_bin1	, error_bin2	, ...]
+// ]
+
+// Order of bin subtables.
+const REC_A	= 1;
+const REC_H	= 2;
+const LIG_A	= 3;
+const LIG_H	= 4;
+// Order of data in bin subtables.
+const BIN_MIN	= 1;
+const BIN_MAX	= 2;
+const RF	= 3;
+const RF_ERR	= 4;
+const INT_TYPE  = 5;
+
+
+function ViewCenter, fwrite_MOE;
+//==============================================================================
+// Ultility functions.
+//------------------------------------------------------------------------------
+// dwrite: Write argument only if appropriate constant is set.
+local function dwrite arg
+#if DEBUG_WRITE
+    write arg;
+#endif
+endfunction
+
+const DEBUG_WRITE2 = DEBUG_WRITE === 2;
+local function dwrite2 arg
+#if DEBUG_WRITE2
+    write arg;
+#endif
+endfunction
+
+// aFullName: For a flat vector of atom keys generate human-readable
+// name tokens that describe the atoms (chain, resiue, atom name etc.)
+local function aFullName akeys
+    local rkeys = aResidue akeys;
+    local ckeys = aChain akeys;
+
+	// Chain tag.
+
+    local ctid = cTagId ckeys;
+    if length uniq ctid === 1 then
+	ctid = '';
+    else
+	ctid = totok ctid;
+    endif
+
+    local ct = cTag ckeys;
+
+	// Chain.
+
+    local cid = cNumber ckeys;
+    if length uniq cid === 1 then
+	cid = '';
+    else
+	cid = totok cid;
+    endif
+
+    local cnam = app token cLetter ckeys;
+    cnam | cnam == ' ' = '';
+
+	// Residue.
+
+    local rnam = rName rkeys;
+    local ruid = totok rUID rkeys;
+
+	// Atoms.
+
+    local anam = aName akeys;
+
+    local names = tok_cat [
+	ctid,
+	select [':', '', anytrue ctid],
+	ct,
+	'|',
+
+	cid,
+	select [':', '', anytrue cid],
+	cnam,
+	select ['|', '', anytrue cat [cid, cnam]],
+
+	rnam,
+	ruid,
+	'|',
+
+	anam
+    ];
+
+    return names;
+endfunction
+
+// aBondiRadius: Return Bondi VdW radii of given atoms.
+// A. Bondi (1964). "van der Waals Volumes and Radii". J. Phys. Chem. 68: 441.
+// doi:10.1021/j100785a001
+local function aBondiRadius akeys
+    local radii = tagget [BONDI_RADII, aElement akeys];
+    radii | app isnull radii = 2;
+    return radii;
+endfunction
+
+// gmean: Calculate geometric mean value.
+local function gmean v = pow [mul v, invz length v];
+
+// error_propagation: Error propagation for geometric mean.
+local function error_propagation [rf, err]
+    local exponent = inv l_length [err, rf];
+    local v = app mul ([rf] || not matsetdiag [0, one rf]);
+    return add mul [v, exponent, pow [mul rf, dec exponent], err];
+endfunction
+
+// error propagation for RF_score
+local function error_propagation_rf_score [rf, err]
+    local v = app mul ([rf] || not matsetdiag [0, one rf]);
+    return add mul [v, err];
+endfunction
+
+// G_Cat_basic: Concatenate graphical object data.
+// This is faster than G_Cat, but with limited functionality.
+// It does plain concatenating and index shifting.
+local function G_Cat_basic gdata
+    local [seg, idx, colors, xyz, nxyz] = tr gdata;
+    local shft = pscan cat [0, droplast app l_length xyz];
+    seg		= cat seg;
+    idx		= cat (idx + shft);
+    colors	= cat colors;
+    xyz		= apt cat xyz;
+    nxyz	= apt cat nxyz;
+
+    return [seg, idx, colors, xyz, nxyz];
+endfunction
+
+// int2hex: Conversion of a MOE integer to hexadecimal token.
+// copied from label.svl
+local function int2hex i
+    const HEX = "0123456789abcdef";
+    local function b2h byte = apt bitand [byte, [0xF0, 0x0F]] / [0x10, 0x01];
+    local hex = app b2h byteunpack3 i;
+    return token HEX[1 + cat hex];
+endfunction
+
+// GOpen0: Open a gobj linked to MOE's main system.
+local function GOpen0 gtitle
+    local sys = SystemCurrent 0;
+    local gkey = GOpen [];
+    GSetTitle [gkey, gtitle];
+
+	// Comment the line GSetClass [] to make the gobj public. I.e.:
+	// - listed in Graphics Object Manager
+	// - saved to MOE files (if graphics are saved)
+
+    GSetClass [gkey, '.private'];
+    SystemCurrent sys;
+    return gkey;
+endfunction
+
+//==============================================================================
+// Functions to get interaction candidates (pairs of atoms).
+//------------------------------------------------------------------------------
+// not_obscured: Calculate whether the line-of-sight between 2 atoms is
+// obstructed by environment atoms.
+// INPUT : [Atom1, Atom2, [EnvAtom1, EnvAtom2,...]]
+// OUTPUT: 1 = not obstructed, 0 = obstructed
+local function not_obscured [A, B, env]
+    env = diff [env, [A,B]];
+
+    // If the distance A-B is shorter than the sum of atom radii (A,B) it is
+    // considered a direct clash that cannot be obstructed.
+
+    if aDist [A, B] <= add aBondiRadius [A, B] then
+	return 1;
+    endif
+
+	// To avoid obstruction by directly bonded neighbours A and B are moved
+	// towards each other by their respective radii. Effectively shortening
+	// the line of sight.
+
+    local ba = rot3d_vNormalize app sub aPos [A, B];
+    local [a, b] = app aPos [A, B];
+    a = a - ba * aBondiRadius A;
+    b = b + ba * aBondiRadius B;
+
+    local e = aPos env;
+    local eradii = aBondiRadius env;
+
+	// The line of sight is obstructed if either:
+	// 1) The distance of an env atom to A or B is less than the
+	//	radius of env
+	// 2.1) The distance of an env atom to the line (AB) is lesser than the
+	//	radius of env AND
+	// 2.2) The projection of env on (AB) is between A and B
+
+	// 1) Direct distance check.
+
+    local dist_a = sqrt add sqr sub [a, e];
+    local dist_b = sqrt add sqr sub [b, e];
+    if anytrue (dist_a < eradii or dist_b < eradii) then
+	return 0;
+    endif
+
+	// 2) Get projections of env on (AB)
+
+    ba = rot3d_vNormalize (a - b);
+    local be = e - b;
+
+    local v = rot3d_vDot [be, ba];
+
+    local p = b + tr (v * [ba]);
+
+	// 2.1) Distance check.
+
+    local pdist = sqrt add sqr sub [p, e];
+    local mask = pdist < eradii;
+
+    if allfalse mask then
+	return 1;
+    endif
+
+	// 2.2) For those atoms too close to the line check whether their
+	// projection is actually between A and B.
+
+    local px = p(1) | mask;
+    local abx = app first [a, b];
+
+    mask = px < max abx and px > min abx;
+
+    if allfalse mask then
+	return 1;
+    endif
+
+    return 0;
+endfunction
+
+//------------------------------------------------------------------------------
+// interaction_pairs: Get pairs of interacting atoms by:
+// - overall lig-rec distance
+// - distance < vdW distances + margin
+// - line-of-sight obstruction
+// INPUT : [ligand atoms, receptor atoms, options]
+// OUTPUT: [ligand_atoms, receptor atoms]	// vectors of same length
+local function interaction_pairs [lig, rec, opt]
+    opt = tagcat [opt, DEFAULTS];
+
+	// Boil down to heavy atoms, only.
+
+    rec = cat oAtoms rec;
+    lig = cat oAtoms lig;
+    rec = diff [rec, lig];
+    lig = lig | not aInert lig and not aHidden lig;
+    rec = rec | not aInert rec and not aHidden rec;
+    rec = rec | aAtomicNumber rec > 1;
+    lig = lig | aAtomicNumber lig > 1;
+
+    local pos_lig = aPos lig;
+    local pos_rec = aPos rec;
+
+	// Get active site atoms (lig >> rec).
+
+    local prox_key = prox_open [opt.env_radius, pos_rec, opt.env_radius];
+    local [seg, rec_idx, sqr_dist] = prox_find [prox_key, pos_lig, 0];
+    prox_close prox_key;
+
+    local lig_idx = x_id lig;
+    lig_idx = stretch [lig_idx, seg];
+
+    local rinter = get [rec, rec_idx];
+    local linter = get [lig, lig_idx];
+
+	// Distance filter.
+	// Sum of vdW radii + margin < actual distance.
+
+    local allow_dist = add app aBondiRadius [linter, rinter] + opt.int_margin;
+    local dist = sqrt sqr_dist;
+    local m_dist = dist < allow_dist;
+
+    rinter = rinter | m_dist;
+    linter = linter | m_dist;
+
+	// Line-of-sight filter.
+
+    local inter = cat [linter, rinter];
+    local m_obscured = apt not_obscured [rinter, linter, [inter]];
+
+    rinter = rinter | m_obscured;
+    linter = linter | m_obscured;
+
+    return [linter, rinter];
+endfunction
+
+//==============================================================================
+// Functions to read and parse the CSV lookup files.
+//------------------------------------------------------------------------------
+// read_csv: Generic CSV file reader.
+// record delimeter = new_line; field delimeter = CSV_DELIMETER
+// INPUT : 'csv_file_name'
+// OUTPUT: [<header1>: <column1>, <header2>: <column2>, ...]
+// The first line is considered the header. All records (lines) need to have
+// the identical number of fields as the header.
+// All values are converted to their respective formats (CSV_DATAYPE).
+
+local function read_csv csv_file
+    csv_file = fabsname csv_file;
+
+    const errformat = 'ERROR parsing CSV {t:} - {t:}';
+    if isfalse fsize csv_file then
+	local errmsg = twrite [errformat, csv_file, 'unable to locate CSV.'];
+	dwrite ['{t:}\n', errmsg];
+	return [errmsg, 'error'];
+    elseif isfalse freadable csv_file then
+	errmsg = twrite [errformat, csv_file, 'CSV is not readable.'];
+	dwrite ['{t:}\n', errmsg];
+	return [errmsg, 'error'];
+    endif
+
+    local fnum = fopenrz csv_file;
+    local fn_size = fsize fnum;
+
+    local data = [], line_raw, line_fields, i = 0;
+    local is_header = 1, header, nfields;
+    local m_nnull_fields;
+    const wrnformat = 'WARNING parsing CSV {t:} skipping line {t:} - {t:}\n';
+
+    while ltL [ftell fnum, fn_size] loop
+	i = inc i;
+	line_raw = cat freadb [fnum, 'line', 1];
+	line_fields = fieldsplit [line_raw, CSV_DELIMETER];
+
+	    // 1st line is header.
+
+	if is_header then
+	    header = app token line_fields;
+	    nfields = length header;
+	    is_header = 0;
+	    data = tag [];
+	    continue;
+	endif
+
+	    // The number of fields in each line must match the length of
+	    // header fields!
+
+	if neL [length line_fields, nfields] then
+	    dwrite [wrnformat, csv_file, i, 'number of fields inconsistent'];
+	    continue;
+	elseif andE app isnull line_fields then
+	    dwrite [wrnformat, csv_file, i, 'all empty fields'];
+	    continue;
+	endif
+
+	    // Empty fields are [] (not '').
+
+	m_nnull_fields = app notnull line_fields;
+	line_fields | m_nnull_fields = app token (line_fields | m_nnull_fields);
+
+	data = append [data, line_fields];
+    endloop
+
+    data = tag [header, tr data];
+
+	// Convert data to appropriate types.
+	// Input format is 'token'.
+	// Default output format is 'token'.
+
+    local field, dtype, vals, val;
+    for field in header loop
+	dtype = CSV_DATATYPE.(field);
+	vals = data.(field);
+
+	if dtype === 'float' then
+	    vals = atof vals;
+	elseif dtype === 'int' then
+	    vals = atof vals;
+	elseif dtype === 'inc int delim' then
+	    for i in x_id vals loop
+		val = vals(i);
+		val = wordsplit [string val, CSV_DELIMETER2];
+		if isnull val then continue; endif
+		val = inc atoi app token val;
+		vals(i) = val;
+	    endloop
+    elseif dtype === 'token delim' then
+	    for i in x_id vals loop
+		val = vals(i);
+		val = wordsplit [string val, CSV_DELIMETER2];
+		val = app token val;
+		vals(i) = val;
+	    endloop
+	elseif dtype === 'SMARTS' then
+	    for i in x_id vals loop
+		val = vals(i);
+		if isnull val then continue; endif
+		if not sm_MatchSyntax val then
+		    dwrite [wrnformat, csv_file, i,
+			twrite ['invalid parsed SMARTS {t:}', val]
+		    ];
+		endif
+		vals(i) = val;
+	    endloop
+	else
+	    continue;
+	endif
+
+	data.(field) = vals;
+
+    endloop
+
+    fclose fnum;
+    return [data, ''];
+endfunction
+
+//------------------------------------------------------------------------------
+// parse_interactions: Parse an interactions lookup CSV.
+// To speed up the actual interaction lookup this functions heavily sanitizes
+// the data and precalculates the RF_error.
+// WARNING: The order of provided column names (tags) is important!
+// INPUT : ['csv_file', <type definition columns>, <bin data columns>, options]
+// OUTPUT: [[pair1, pair2,...], [bins1, bins2,...]
+//	pair = [prot_atype, lig_SMARTS, SMARTS_idx]
+//	bins = [[low1, low2,...], [high1, high2,..], [rf1,...],[errors1,...]]
+local function parse_interactions [csv_file, tags_pairs, tags_bins, opt]
+    local [raw_data, err] = read_csv csv_file;
+    if err === 'error' then return [raw_data, err]; endif
+
+	// Get content of fields for interaction definition and bin data.
+
+    local all_pairs = tr tagget [raw_data, tags_pairs];
+    local all_bins  = tagget [raw_data, tags_bins];
+
+    local [bin_min, bin_max, rf, rf_expect, rf_min, rf_max, int_type] = all_bins;
+
+	// Calculate confidence intervals from raw errors.
+
+    local rf_err = div [abs sub [rf_max, rf_min], 2];// mean of high and low
+
+	// Apply expected filter.
+	// RF_expected < min_expected OR isnull RF_expected
+	// -> RF = 1
+
+    rf | app istrue ltE [rf_expect, opt.min_expected] = 1;
+
+	// RF == 0 OR RF == []
+	// -> RF = 1
+
+    rf | app isfalse rf = 1;
+
+	// RF == 1 or RF_err == []
+	// -> RF_err = 0
+
+    rf_err | (rf == 1) or (app isnull rf_err)= 0;
+
+	// Bring data in correct order.
+
+    all_bins = perm [
+	[bin_min, bin_max, rf, rf_err, totok int_type],
+	[BIN_MIN, BIN_MAX, RF, RF_ERR, INT_TYPE]
+    ];
+
+	// Build the rough dvar data structure by removing
+	// redundant definitions.
+    all_bins = tr all_bins;
+
+    local pairs = uniq all_pairs;
+    local pairs_idx = indicesof [pairs, all_pairs];
+
+    local bins = app tr apt get [[all_bins], pairs_idx];
+
+    return [[pairs, bins], ''];
+endfunction
+
+//------------------------------------------------------------------------------
+// parse_atypes: Parse an atom type CSV file.
+local function parse_atypes [csv_file, data_tags]
+
+    local [raw_data, err] = read_csv csv_file;
+
+    if err === 'error' then
+	return [raw_data, err];
+    elseif not andE m_join [data_tags, tags raw_data] then
+	return [twrite ['ERROR: missing CSV fields in {t:}', csv_file], err];
+    endif
+
+    local data = tagget [raw_data, data_tags];
+
+    return [data, ''];
+endfunction
+
+//------------------------------------------------------------------------------
+// cat_itypes: Concatenate interaction data.
+// The function fully builds the .itypes part of the dvar data by fully removing
+// redundant interaction definitions across rec_a, rec_h, lig_a and lig_h data.
+local function cat_itypes itypes
+    local [all_pairs, all_bins] = tr itypes;
+
+    local npairs = app length all_pairs;
+    local cat_pairs = cat all_pairs;
+
+    local pairs = uniq cat all_pairs;
+    local bins;
+    local i, pair, mask;
+    for i in igen length pairs loop
+	pair = pairs(i);
+	mask = apt eqL [cat_pairs, [pair]];
+	mask = split [mask, npairs];
+	bins(i) = app cat (all_bins || mask);
+    endloop
+
+    return [pairs, bins];
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Interactions_ReadFiles: Read all CSV lookup files.
+local function RF_Interactions_ReadFiles opt
+    opt = tagcat [opt, DEFAULTS];
+
+    local data = [];
+
+	// Parse atom types.
+
+    local t = clock [];
+    local ttok = 'SUBTIMING ReadFiles: {t:-20}: {n:f.3} sec\n';
+
+    local arg = [opt.f_atypes_rec, CSV_TAGS_ATYPE_REC];
+    local [res, err] = parse_atypes arg;
+    if err === 'error' then return [res, err]; endif
+    data.atypes_rec = res;
+
+    arg = [opt.f_atypes_lig, CSV_TAGS_ATYPE_LIG];
+    [res, err] = parse_atypes arg;
+    if err === 'error' then return [res, err]; endif
+    data.atypes_lig = res;
+
+    dwrite2 [ttok, 'Read Atoms types', clock [] - t];
+
+	// Read lookup CSVs.
+
+    t = clock [];
+
+    arg = [opt.f_itypes_rec_a, CSV_TAGS_PAIRS_A, CSV_TAGS_BINS_A, opt];
+    [res, err] = parse_interactions arg;
+    if err === 'error' then return [res, err]; endif
+    local itypes_rec_a = res;
+
+    arg = [opt.f_itypes_rec_h, CSV_TAGS_PAIRS_H, CSV_TAGS_BINS_H, opt];
+    [res, err] = parse_interactions arg;
+    if err === 'error' then return [res, err]; endif
+    local itypes_rec_h = res;
+
+    arg = [opt.f_itypes_lig_a, CSV_TAGS_PAIRS_A, CSV_TAGS_BINS_A, opt];
+    [res, err] = parse_interactions arg;
+    if err === 'error' then return [res, err]; endif
+    local itypes_lig_a = res;
+
+    arg = [opt.f_itypes_lig_h, CSV_TAGS_PAIRS_H, CSV_TAGS_BINS_H, opt];
+    [res, err] = parse_interactions arg;
+    if err === 'error' then return [res, err]; endif
+    local itypes_lig_h = res;
+
+    dwrite2 [ttok, 'Read Lookup Files', clock [] - t];
+
+	// Build lookup-optimized data structure.
+
+    t = clock [];
+
+    local itypes = perm [
+	[itypes_rec_a, itypes_rec_h, itypes_lig_a, itypes_lig_h],
+	[REC_A, REC_H, LIG_A, LIG_H]
+    ];
+
+    data.itypes = cat_itypes itypes;
+
+    dwrite2 [ttok, 'Build Data Structure', clock [] - t];
+
+    return [data, ''];
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Interactions_GetLookupData: Get the atom type and lookup data.
+// Either from the CSVs or cache.
+global function RF_Interactions_GetLookupData [dvar, opt]
+
+    local cache_files = fcat [MOE_PATH, 'lib', opt.cache_file];
+    local cache = first (cache_files | fsize cache_files);
+
+    local dfiles = tagget [opt, [
+	'f_atypes_rec', 'f_atypes_lig',
+	'f_itypes_rec_a', 'f_itypes_rec_h',
+	'f_itypes_lig_a', 'f_itypes_lig_h'
+    ]];
+
+    local csv_ok = andE fsize dfiles;
+    local cache_ok = istrue fsize cache;
+
+	// Neither cache file not CSVs exist.
+
+    if not cache_ok and not csv_ok then
+	return ['Unable to locate cache and CSV files.', 'error'];
+    endif
+
+	// Get date and size of CSV files.
+
+    if csv_ok then
+	local ddates = fdate dfiles;
+	local dsizes = fsize dfiles;
+    endif
+
+	// Cache file exists.
+	// If CSVs do not exist or match cache return the cached data.
+
+    if cache_ok then
+	dwrite ['GetLookupData: Reading cache file: {t:}\n', cache];
+	local fnum;
+#if ZIP_CACHE
+	fnum = _fopenrz cache;
+#else
+	fnum = _fopenr cache;
+#endif
+	if isfalse fnum then
+	    return ['Read access to cache file is blocked.', 'error'];
+	endif
+
+	local data = freadb [fnum, 'SVL', INT_MAX];
+	fclose fnum;
+
+	if not csv_ok then
+	    *dvar = data(2);
+	    return [dvar, ''];
+	endif
+
+	local [cfiles, cdates, csizes] = data(1);
+	if	eqL [dfiles, cfiles]
+	    and eqL [ddates, cdates]
+	    and eqL [dsizes, csizes]
+	then
+	    *dvar = data(2);
+	    return [dvar, ''];
+	endif
+    endif
+
+    dwrite 'GetLookupData: (Re)reading CSV files\n';
+
+	// At this point the CSV will be read and written to cache.
+
+    local [res, err] = RF_Interactions_ReadFiles opt;
+
+    if err === 'error' then return [res, err]; endif
+
+    *dvar = res;
+
+    const clocation = '$MOEFILES/lib';
+    if neL [ftype clocation, 'dir'] then
+	fmkdir clocation;
+    endif
+
+    cache = fcat [clocation, opt.cache_file];
+#if ZIP_CACHE
+    fnum = _fopenwz cache;
+#else
+    fnum = _fopenw cache;
+#endif
+    if isfalse fnum then
+	return ['Write access to cache file is blocked.', 'error'];
+    endif
+
+    local t = clock [];
+    fwriteb [fnum, 'SVL', [[dfiles, ddates, dsizes], res]];
+    fclose fnum;
+    dwrite ['SUBTIMING GetLookupData: Write Cache: {n:f.3}\n', clock [] - t];
+
+    dwrite ['GetLookupData: Updated cache file: {t:}\n', cache];
+
+#if DEBUG_DVAR
+    csv_data = data;
+#endif
+    return [dvar, ''];
+endfunction
+
+//==============================================================================
+// type_rec_atoms: Return the receptor atom type of given atoms by performing
+// SMARTS matching against the data from the CSV.
+global function type_atoms [dvar, lig_rec, akeys]
+    local tg = select ['atypes_rec', 'atypes_lig', lig_rec === 'rec'];
+
+	// The currently untyped atoms.
+
+    if isnull akeys then return []; endif
+    local akeys_utyp = akeys;
+
+	// Get the data of available types.
+	// Filter the types so that only elements of the actual atoms remain.
+
+    local types_utyp = tagpeek [*dvar, tg];
+
+    local types_elem = types_utyp(4);
+
+    local elem_mask = m_join [types_elem, aElement akeys_utyp];
+
+    types_utyp = types_utyp || [elem_mask];
+
+	// Initialize the atom types to [].
+
+    local names = rep [[], length akeys];
+
+    local typ_data;
+    local typ_name, typ_sm, typ_smi;
+    local matches, match_akey;
+
+	// Loop over the stack of available types.
+	// Get type name, SMARTS and SMARTS index of the currently tested type.
+	// Match the SMARTS, get the matching atom.
+	// If we get a match:
+	// - Set atom type in names variable.
+	// - Remove matched atom from untyped atoms.
+	// - Refilter available types for elemts no longer available in
+	//   untyped atoms.
+	// Termination criteria:
+	// - No more untested applicable types.
+	// - No more untyped atoms.
+
+    while anytrue types_utyp
+    while notnull akeys_utyp loop
+	typ_data = app first types_utyp;
+	types_utyp = app dropfirst types_utyp;
+
+	[typ_name, typ_sm, typ_smi] = typ_data[[1,2,3]];
+
+	    // NOTE: sm_MatchAll returns atoms outside of the requested atoms!
+	    // Thus, it is necessary to remove these matches lateron.
+
+	matches = sm_MatchAll [typ_sm, akeys];
+	match_akey = cat apt get [matches, [typ_smi]];
+	match_akey = join [match_akey, akeys_utyp];//discard !akeys_utyp
+	if isnull match_akey then continue; endif
+
+	names = put [names, indexof [match_akey, akeys], typ_name];
+	akeys_utyp = diff [akeys_utyp, match_akey];
+
+	elem_mask = m_join [types_utyp(4), aElement akeys_utyp];
+	types_utyp = types_utyp || [elem_mask];
+
+    endloop
+    return names;
+endfunction
+
+//==============================================================================
+local function type_interactions [inter, lig, rec, lig_atypes, rec_atypes]
+    local inter_idx = apt indexof [inter, [lig, rec]];
+
+    local inter_atypes = apt get [[lig_atypes, rec_atypes], inter_idx];
+
+    return inter_atypes;
+endfunction
+
+//==============================================================================
+local function interaction_index [dvar, inter_atypes]
+    local itypes = first *dvar.itypes;
+
+    local inter_types = indexof [tr inter_atypes, itypes];
+
+    return inter_types;
+endfunction
+
+//------------------------------------------------------------------------------
+// measure_interactions: Calculate the angle and sp2-plane distance for given
+// interactions. Plane atoms are also defined in lookup files for non sp2 but
+// planar atom types, e.g. tyrosine oxygen.
+// INPUT : transposed pairs of ligand and receptor atom pairs
+local function measure_interactions [lig, rec, ligat_is_plane, rec_atypes]
+
+    // Angle [a1, a2, *].
+    // Where * is any atom bonded to a2.
+    function angle [a1, a2]
+	local a3 = aBonds a2;
+	a3 = a3 || aAtomicNumber a3 > 1;
+	return (180 - apt aAngleDeg uext [a1, a2, a3]);
+    endfunction
+
+
+    // Distance of a2 overa1 sp2 plane.
+    function over_plane [a1, a2, ligat_is_plane, rec_atype]
+
+	// Check wether atom is sp2 or defined as "pi" in lookup file
+	if neL [aGeometry a1, 'sp2'] and eqL [aClassRLS a1, 'rec']
+	    and neL [m_findmatch['*pi*', rec_atype], 1]
+	then return [];
+	elseif neL [aGeometry a1, 'sp2'] and eqL [aClassRLS a1, 'lig']
+	    and eqL [ligat_is_plane, 0]
+	then return [];
+	endif
+
+	local n = aSP2Plane a1;
+	local p1 = aPos a1;
+	local p2 = aPos a2;
+	local d = add (neg n * p1);
+	return abs (add cat [n * p2, d] / sqrt add sqr n);
+    endfunction
+
+    local rec_angle = angle [lig, rec];
+
+    rec_angle | aClassRLS rec == 'sol' = 1;
+
+    //if aClassRLS rec == 'sol' then rec_angle = 0; endif
+    local lig_angle = angle [rec, lig];
+    local rec_planedist = apt over_plane [rec, lig, ligat_is_plane, rec_atypes];
+    local lig_planedist = apt over_plane [lig, rec, ligat_is_plane, rec_atypes];
+    return [rec_angle, rec_planedist, lig_angle, lig_planedist];
+endfunction
+
+//------------------------------------------------------------------------------
+// lookup_interactions: For typed and measured interactions determine in which
+// bin they fall and return RFs and RF_errors.
+local function lookup_interactions [dvar, inter_types, vals]
+    local ibins = second *dvar.itypes;
+    local rfs = [], rf_errs = [], int_types = [];
+    local i, val, idx, data, j, bin_idx, rf, rf_err, int_type, mask;
+
+	// Loop over interactions.
+    for i in x_id inter_types loop
+	idx = inter_types(i);
+	    // Loop over interaction terms (lig_alpha, lig_h, rec_alpha, rec_h)
+
+	for j in igen 4 loop
+	    val = vals(j)(i);
+
+		// Get the bin the measured value belongs into.
+		// RF = 1 and RF_err = 0 if no valid lookup present:
+		// 1) measured value of the term is empty (not calculatable)
+		// 2) one of the measured values is not in a valid bin
+
+	    if isnull val then
+		rfs(j)(i) = NaN;
+		rf_errs(j)(i) = NaN;
+		continue;
+	    endif
+
+	    data = ibins(idx)(j);
+	    bin_idx = app x_pack (val > [data(1)] and val < [data(2)]);
+
+		// Look-up RF and RF_err for the bin.
+
+	    rf		= data(RF)[bin_idx];
+	    rf_err	= data(RF_ERR)[bin_idx];
+	    int_type	= data(INT_TYPE)[bin_idx];
+
+		// 2) Values that are not in exactly one bin.
+
+	    mask	= app length bin_idx <> 1;
+	    rf | mask	= 1;
+	    rf_err | mask = 0;
+
+	    rfs(j)(i)	= rf;
+	    rf_errs(j)(i)= rf_err;
+	    int_types(j)(i) = int_type;
+
+	endloop
+    endloop
+
+    return [rfs, rf_errs, int_types];
+endfunction
+
+//------------------------------------------------------------------------------
+// calc_rf_and_error: Given the raw RFs and confidence intervals of all
+// interactions calculate the accumulated RFs and propagated errors.
+local function calc_rf_and_error [rf_all, err_all]
+    const IDX = [REC_A, REC_H, LIG_A, LIG_H];
+
+    local [rf_ra, rf_rh, rf_la, rf_lh] = get [rf_all,  IDX];
+    local [er_ra, er_rh, er_la, er_lh] = get [err_all, IDX];
+
+    local rf_rec_a_raw, rf_lig_a_raw;
+    local er_rec_a_raw, er_lig_a_raw, er_rec_h_raw, er_lig_h_raw;
+    local rf_rec_a, rf_rec_h, rf_lig_a, rf_lig_h;
+    local er_rec_a, er_rec_h, er_lig_a, er_lig_h;
+    local rf_rec, rf_lig, rf;
+    local er_rec, er_lig, er;
+
+    local rfs = [], errs = [];
+
+    local i;
+    for i in igen length rf_ra loop
+	rf_rec_a_raw = rf_ra(i);
+	rf_lig_a_raw = rf_la(i);
+
+	er_rec_a_raw = er_ra(i);
+	er_lig_a_raw = er_la(i);
+
+	rf_rec_a = gmean rf_rec_a_raw;
+	rf_lig_a = gmean rf_lig_a_raw;
+	rf_rec_h = rf_rh(i);
+	rf_lig_h = rf_lh(i);
+
+	er_rec_a = error_propagation [rf_rec_a_raw, er_rec_a_raw];
+	er_lig_a = error_propagation [rf_lig_a_raw, er_lig_a_raw];
+	er_rec_h = er_rh(i);
+	er_lig_h = er_lh(i);
+
+	if rf_rec_h === NaN then
+	    rf_rec = rf_rec_a;
+	    er_rec = er_rec_a;
+
+	else
+	    rf_rec = gmean [rf_rec_a, rf_rec_h];
+	    er_rec = error_propagation [
+		[rf_rec_a, rf_rec_h], [er_rec_a, er_rec_h]
+	    ];
+	endif
+
+	if rf_lig_h === NaN then
+	    rf_lig = rf_lig_a;
+	    er_lig = er_lig_a;
+	else
+	    rf_lig = gmean [rf_lig_a, rf_lig_h];
+	    er_lig = error_propagation [
+		[rf_lig_a, rf_lig_h], [er_lig_a, er_lig_h]
+	    ];
+	endif
+
+	rf = gmean [rf_rec, rf_lig];
+
+	er = error_propagation [[rf_rec, rf_lig], [er_rec, er_lig]];
+
+	rfs(i) = [
+	    rf, rf_rec, rf_lig, rf_rec_a, rf_rec_h, rf_lig_a, rf_lig_h
+	];
+	errs(i) = [
+	    er, er_rec, er_lig, er_rec_a, er_rec_h, er_lig_a, er_lig_h
+	];
+    endloop
+
+    return [tr rfs, tr errs];
+endfunction
+
+//------------------------------------------------------------------------------
+// calc_int_type: Given the raw interaction types calculate the actual
+// interaction type.
+local function calc_int_type [int_type_all, rf_totals];
+    const IDX = [REC_A, REC_H, LIG_A, LIG_H];
+    local int_type, int_count;
+
+    local [int_type_ra, int_type_rh, int_type_la, int_type_lh]
+	    = get [int_type_all,  IDX];
+    local int_type_rec_a_raw, int_type_lig_a_raw;
+    local int_type_rec_a, int_type_rec_h, int_type_lig_a, int_type_lig_h;
+    local int_type_cnt_rec_a_raw, int_type_cnt_rec_h;
+    local int_type_cnt_lig_a_raw, int_type_cnt_lig_h;
+    local int_types = [];
+
+
+	// loop over each interaction
+    local i;
+    for i in igen length int_type_ra loop
+
+    local interaction_priority; // order by which interaction types are assigned
+
+    // repulsive interactions are only assigned for low RF_total values,
+    // attractive ones only for high RF_totals
+    if rf_totals(i) < 1 then
+	interaction_priority = ['electrostatic_repulsion', 'desolvation'];
+    else
+	interaction_priority = ['hbond_classic', 'hbond_weak', 'ionic',
+				'halogen_bond', 'multipolar', 'pi',
+				'hydrophobic'];
+    endif
+
+    // get allowed interaction types from looup files
+    int_type_rec_a_raw = cat cat int_type_ra(i);
+	int_type_lig_a_raw = cat cat int_type_la(i);
+	int_type_rec_h = cat cat int_type_rh(i);
+	int_type_lig_h = cat cat int_type_lh(i);
+
+    //interaction type count
+    int_type_cnt_rec_a_raw = freq [interaction_priority, int_type_rec_a_raw];
+    int_type_cnt_lig_a_raw = freq [interaction_priority, int_type_lig_a_raw];
+    int_type_cnt_rec_h = freq [interaction_priority, int_type_rec_h];
+    int_type_cnt_lig_h = freq [interaction_priority, int_type_lig_h];
+
+    //forbidden interaction types
+    if rf_totals(i) > 1 then
+	if int_type_cnt_rec_a_raw(1) == 0 and int_type_cnt_rec_a_raw(2) == 0
+	    or int_type_cnt_lig_a_raw(1) == 0
+	    and int_type_cnt_lig_a_raw(2) == 0
+	then
+
+	    interaction_priority = [
+		'ionic', 'halogen_bond', 'multipolar', 'pi', 'hydrophobic'
+	    ];
+
+	    int_type_cnt_rec_a_raw = drop [int_type_cnt_rec_a_raw, 2];
+	    int_type_cnt_lig_a_raw = drop [int_type_cnt_lig_a_raw, 2];
+	    int_type_cnt_rec_h = drop [int_type_cnt_rec_h, 2];
+	    int_type_cnt_lig_h = drop [int_type_cnt_lig_h, 2];
+	endif
+    endif
+
+	//
+    local mask;
+    if length int_type_lig_h > 0 and length int_type_rec_h == 0 then
+	mask = int_type_cnt_rec_a_raw <> 0 and int_type_cnt_lig_a_raw <> 0
+			and int_type_cnt_lig_h <> 0;
+
+    elseif length int_type_rec_h > 0 and length int_type_lig_h == 0 then
+	mask = int_type_cnt_rec_a_raw <> 0 and int_type_cnt_lig_a_raw <> 0
+			and int_type_cnt_rec_h <> 0;
+
+    elseif length int_type_lig_h > 0 and length int_type_rec_h > 0 then
+	mask = int_type_cnt_rec_a_raw <> 0 and int_type_cnt_lig_a_raw <> 0
+			and int_type_cnt_lig_h <> 0 and int_type_cnt_rec_h <> 0;
+
+    else mask = int_type_cnt_rec_a_raw <> 0 and int_type_cnt_lig_a_raw <> 0;
+    endif
+
+	interaction_priority = interaction_priority | mask;
+	int_type_cnt_rec_a_raw = int_type_cnt_rec_a_raw | mask;
+	int_type_cnt_lig_a_raw = int_type_cnt_lig_a_raw | mask;
+	int_type_cnt_rec_h = int_type_cnt_rec_h | mask;
+	int_type_cnt_lig_h = int_type_cnt_lig_h | mask;
+
+	// Assign the interaction typ with the most overlap between geometries
+    int_count = int_type_cnt_rec_a_raw
+		+ int_type_cnt_lig_a_raw
+		+ int_type_cnt_rec_h
+		+ int_type_cnt_lig_h;
+
+
+    if add int_count == 0 then
+    int_type = '';
+    else int_type = interaction_priority(x_max (int_count));
+    endif;
+
+    int_types(i) = [int_type];
+    endloop
+    return tr int_types;
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Interactions_Calc: Type interactions, measure and look up
+// RF and RF_err. Generate the Listbox content (in DEBUG mode the panel shows
+// more data than numerically returned by this function).
+local function RF_Interactions_Calc [
+    dvar
+,   inter_akeys
+,   inter_atypes
+]
+
+    local inter_typidx = interaction_index [dvar, inter_atypes];
+
+    inter_akeys	 = inter_akeys	|| [inter_typidx];
+    inter_atypes = inter_atypes	|| [inter_typidx];
+    inter_typidx = pack inter_typidx;
+
+    local ligat_is_plane = *dvar.atypes_lig(5)[indexof[inter_atypes(1), *dvar.atypes_lig(1)]];
+
+    local vals = measure_interactions [inter_akeys(1), inter_akeys(2), ligat_is_plane, inter_atypes(2)];
+    local [rfs_raw, rfs_err_raw, int_types_raw] = lookup_interactions
+	[dvar, inter_typidx, vals];
+
+    local [rfs, errs] = calc_rf_and_error [rfs_raw, rfs_err_raw];
+
+    local int_types = calc_int_type [int_types_raw, rfs(1)];
+
+	// Sort the data by RF.
+
+    //local order = reverse x_sort first rfs;
+    //inter_akeys	= apt get [inter_akeys	, [order]];
+    //inter_atypes= apt get [inter_atypes	, [order]];
+    //rfs		= apt get [rfs		, [order]];
+    //errs	= apt get [errs		, [order]];
+    //vals	= apt get [vals		, [order]];
+    //int_types = apt get [int_types		, [order]];
+
+    local anumber = dec aNumber inter_akeys;
+
+    local dist = aDist inter_akeys;
+    local vdw_dist = dist - add app aBondiRadius inter_akeys;
+
+
+#if DEBUG_PANEL
+    local lb_lines = apt twrite cat [
+	'{}\t{}\t'
+	'{}\t{}\t'
+	'{|,}\t{}\t{|,}\t{}\t'
+	'{}\t{}\t{}\t{}\t{}\t{}\t{}\t'
+	'{}\t{}\t{}\t{}\t{}\t{}\t{}\t'
+	'{}\t{}\t'
+	'{}\t',
+	anumber,
+	inter_atypes,
+	vals,
+	rfs,
+	errs,
+	[dist],
+	[vdw_dist],
+	int_types
+    ];
+#else
+    local lb_lines = apt twrite [
+	'{n:f5.3}\t{n:f5.3}\t{n:f5.3}\t{n:f5.3}\t',
+	rfs(1), errs(1), dist, vdw_dist
+    ];
+#endif
+
+	// Return the total Rf values per interaction.
+
+    return [
+	inter_akeys, inter_atypes, rfs(1), errs(1), lb_lines, dist, int_types(1)
+    ];
+endfunction
+
+//==============================================================================
+#if 1
+// RF_Interactions_Scores: calculate ligand atom based scores.
+// - loop over all ligand atoms
+// per ligand atom:
+// - find closest interaction (minimum distance)
+// -> this is a primary interaction
+// - find interactions incl. same ligand atom < 45 deg. of primary interaction
+// -> together with their primary interaction they form an interaction group
+// - repeat until all interaction are assigned an interaction group
+// for each interaction group:
+// - calculate geometric mean and propagated uncertainty
+// ... per ligand atom
+// - calculate geometric mean and propagated uncertainty from interaction groups
+// INPUT : [interactions, distances, rfs, errs, lb_lines]
+//	The nth element in each element belongs to the nth interaction.
+// OUTPUT: [[is_primary, interaction_group], [akeys, scores, errors]]
+//	is_primary, interaction_group are of length as input elements.
+//	akeys, scores, errors are of length of ligand atoms.
+
+global function RF_Interactions_Scores data;
+    const ANGLE_CUTOFF = PRIMARY_INTERACT_ANGLE * PI / 180;
+
+    local [inter, atyp, rfs, errs, lb_lines, dist, int_type] = data;
+    local [lig, rec] = inter;
+
+    local pr_inter, pr_atyp, pr_rfs, pr_errs, pr_lb_lines, pr_dist, pr_int_type;
+
+	// All vecs of length of interactions:
+
+    local is_prim_mask	= zero dist;	// is primary interactions
+    local int_group	= zero dist;	// interaction group
+
+	// All vector of length of ligand atoms.
+
+    local lig_akeys	= [];// key of ligand atom
+    local lig_gridx	= [];// groups per ligand atom
+    local lig_scores	= [];// ligand atom scores
+    local lig_gr_scr	= [];// ligand atom group scores
+    local lig_errs	= [];// ligand atom errors
+    local lig_gr_err	= [];// ligand atom group errors
+
+	// Loop over unique ligand atoms.
+	// Calculate all interaction vectors including this ligand atom.
+
+    local uligs = uniq lig;
+    lig_akeys = uligs;
+
+	// variables (because I keep loosing track of them):
+	// ulig_...	data belonging to a unique ligand atom
+
+    local ulig;		// ligand atom key
+    local ulig_mask;	// mask of length of all interactions
+    local ulig_idx;	// index representation of ulig_mask
+    local ulig_rec;	// receptor atoms with interactions to ulig
+    local ulig_vec;	// interactions in vector notation
+    local ulig_dist;	// length of interactions
+
+    local ulig_gridx;	// interaction group indices associated with ulig
+    local ulig_scores;	// group scores associated with ulig
+    local ulig_errs;	// group errors associated with ulig
+
+	// ug_...	interactions of ulig that are not grouped, yet
+
+    local ug_mask;	// mask showing ungrouped interactions to ulig
+    local ug_idx;	// indices of ug_mask
+    local ug_vec;	// vectors of ungrouped ulig interactions
+
+    local igroup = 0;	// group identifier starting with 1
+
+	// pr_...	primary interaction in currently untyped
+
+    local pr_idx_mindist;// index of primary interaction in ungrouped
+    local pr_vec_mindist;// vector primary interaction
+    local pr_angles;	// angles of ungrouped vectors to primary vector
+    local pr_idx_all;	// index of primary interaction in all interactions
+
+	// gr_...	group of interactions belonging to primary interaction
+
+    local gr_mask;	// mask of group interactions in ungrouped
+    local gr_idx_all;	// indices of group interactions in all interactions
+    local gr_rfs;	// RFs of group interactions
+    local gr_errs;	// errors of group interactions
+
+    local i_ulig;
+    for i_ulig in x_id uligs loop
+	ulig = uligs(i_ulig);
+	ulig_mask = lig == ulig;
+	ulig_idx  = x_pack ulig_mask;
+	ulig_rec  = rec | ulig_mask;
+	ulig_vec  = tr (aPos ulig_rec - aPos ulig);
+	ulig_dist = dist | ulig_mask;
+	ulig_gridx= [];
+	ulig_scores = [];
+	ulig_errs = [];
+	ug_mask = one ulig_rec;
+
+	    // Loop until all interactions are grouped.
+
+	while orE ug_mask loop
+
+		// Update indices of ungrouped vectors.
+		// Increment interaction group index (next group).
+
+	    ug_idx	= x_pack ug_mask;
+	    igroup	= inc igroup;
+
+		// Get vectors of ungrouped interactions.
+		// Get shortest vector.
+
+	    ug_vec		= ulig_vec | ug_mask;
+	    pr_idx_mindist	= x_min (ulig_dist | ug_mask);
+	    pr_vec_mindist	= ug_vec(pr_idx_mindist);
+
+		// Calculate angles between shortest and all vectors.
+		// Get all vectors with angle <= ANGLE_CUTOFF to shortest vec.
+
+	    pr_angles	= apt rot3d_vAngle [[pr_vec_mindist], ug_vec];
+	    gr_mask	= pr_angles <= ANGLE_CUTOFF;
+
+		// Get indices of primary interaction and all group
+		// interactions in the complete list of interactions.
+
+	    pr_idx_all	= ulig_idx[ug_idx](pr_idx_mindist);
+	    gr_idx_all	= ulig_idx[ug_idx][x_pack gr_mask];
+
+		// Set flag for primary interaction.
+		// Set group for all interactions.
+
+	    is_prim_mask= put [is_prim_mask, pr_idx_all, 1];
+	    int_group	= put [int_group, gr_idx_all, igroup];
+
+		// Remove vectors from untyped mask.
+
+	    ug_mask	= mput [ug_mask, ug_mask, not gr_mask];
+
+		// Get all RFs and errors of group.
+		// Calculate RFs and scores for the group.
+
+	    gr_rfs	= rfs[gr_idx_all];
+	    gr_errs	= errs[gr_idx_all];
+
+	    ulig_scores	= cat [ulig_scores, gmean gr_rfs];
+	    ulig_errs	= cat [ulig_errs, error_propagation [gr_rfs, gr_errs]];
+
+		// Append group index.
+
+	    ulig_gridx	= cat [ulig_gridx, igroup];
+
+	endloop
+
+	lig_gr_scr(i_ulig) = ulig_scores;
+//	lig_scores(i_ulig) = gmean ulig_scores;
+	lig_scores(i_ulig) = mul ulig_scores;
+
+	lig_gr_err(i_ulig) = ulig_errs;
+	lig_errs(i_ulig)   = error_propagation_rf_score [ulig_scores, ulig_errs];
+
+	lig_gridx(i_ulig)  = ulig_gridx;
+
+    endloop
+
+    return [
+	[is_prim_mask, int_group],
+	[lig_akeys, lig_gridx, lig_scores, lig_gr_scr, lig_errs, lig_gr_scr]
+    ];
+endfunction
+#endif
+//==============================================================================
+// Rendering code.
+//------------------------------------------------------------------------------
+// render_line: Render a dotted line between positions 1 and 2.
+local function render_line [gkey, pos1, pos2, color, is_faint, opt]
+    opt = tagcat [opt, DEFAULTS];
+
+    local opt_names = select [
+	['render_tt_radius_f', 'render_tt_dashlen_f', 'render_tt_gaplen_f'],
+	['render_tt_radius', 'render_tt_dashlen', 'render_tt_gaplen'],
+	istrue is_faint
+    ];
+    opt_names = cat [opt_names, 'render_quality'];
+    local [rad, len, glen, qual] = tagget [opt, opt_names];
+
+
+    local len0 = sqrt add sqr (pos1 - pos2);
+    local nseg = len0 / (glen + len);
+    local ex = mod1 nseg * (glen + len);
+    nseg = floor nseg;
+
+	// In the extreme edge case where the number of tictacs is 0 a simple
+	// dot is rendered between the 2 positions. This is necessary to have a
+	// valid graphical sub-object. Otherwise index shifting will occur
+	// in __G(Set)Selected.
+
+    if not nseg then
+	GVertex [gkey, 1, 1, color, (pos1 + pos2) / 2];
+	return;
+    endif
+    local unit = rot3d_vNormalize (pos2 - pos1);
+    local start = pos1 + (0.5 * len + ex / 2) * unit;
+    local iseg = [dec igen nseg];
+    local segstart = start + (glen + len) * unit * iseg;
+    local dvec = len * unit;
+
+	// Calculate basic sphere and cylinder at [0,0,0] but with correct
+	// radius and direction.
+	// Instead of re-calculating these cylinders the basic primitives are
+	// moved to their respective positions (putadd).
+
+    local ucylind = G_Cylinder [color, [0,0,0], dvec, rad, qual];
+    local ucap1	  = G_Cap [color, [0,0,0], neg unit * rad, rad, qual];
+    local ucap2	  = G_Cap [color, dvec, unit * rad, rad, qual];
+    local utictac = G_Cat_basic [ucylind, ucap1, ucap2];
+
+    local tictacs = apt putadd [[utictac], 4, apt nest segstart];
+    local gdata	  = G_Cat_basic tictacs;
+
+    GVertex cat [gkey, gdata];
+endfunction
+
+//------------------------------------------------------------------------------
+// For each RF determine the render color.
+local function get_color_bins [rfs, opt]
+    local cdata = opt.render_colors_tt;
+
+	// Get the color bin the RFs fall into.
+
+    local idx = app x_max (rfs <= [cdata(1)]);
+
+    return get [cdata(2), idx];
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Interactions_Render: Render dashed lines for interactions.
+local function RF_Interactions_Render [gkey, inter, rfs, errs, labels, opt]
+    if isfalse GKey gkey then
+	gkey = GOpen0 tok_cat [TASK_TITLE, ' - Interactions'];
+    endif
+    GClearVertexData gkey;
+    GClearTextData gkey;
+
+	// Get interactions.
+
+    local colors = get_color_bins [rfs, opt];
+
+    local i, pos1, pos2, rf, err, color, is_faint;
+    for i in x_id rfs loop
+	pos1 = aPos inter(1)(i);
+	pos2 = aPos inter(2)(i);
+	rf = rfs(i);
+	err = errs(i);
+	color = colors(i);
+	is_faint = (rf <= 1 + err and rf >= 1 - err);
+
+	if istrue labels(i) then
+	    GText cat [
+		gkey, color, (pos1 + (pos2 - pos1) / 2), labels(i)
+	    ];
+	endif
+
+	render_line [gkey, pos1, pos2, color, is_faint, opt];
+    endloop
+
+    __GSetSelectable [gkey, 1];
+
+    return gkey;
+endfunction
+
+//------------------------------------------------------------------------------
+// get_color_gradient: Calculate color gradient. 
+local function get_color_gradient [rfs, opt]
+    local log_rf = log2 rfs;
+    local abs_log_rf = apt min [abs log_rf, 1];
+
+    local bc = tr byteunpack3 opt.render_colors_sp;
+
+    local rf_lt0 = log_rf < 0;
+
+    local base_color = rep [bc(2), length rf_lt0];
+    local shft_color = select [[bc(1) - bc(2)], [bc(3) - bc(2)], rf_lt0];
+
+    local colors = base_color + shft_color * abs_log_rf;
+    colors = bytepack3 tr colors;
+
+    return colors;
+endfunction
+
+//------------------------------------------------------------------------------
+local function get_radius_scores [rf, err, opt]
+    local is_faint = (rf <= 1 + err and rf >= 1 - err);
+    local radii = rep [opt.render_sp_radius, length is_faint];
+    radii | is_faint = opt.render_sp_radius_f;
+    return radii;
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Scores_Render: Render spheres for ligand atom scores.
+local function RF_Scores_Render [gkey, lig, scores, errs, labels, opt]
+    if isfalse GKey gkey then
+	gkey = GOpen0 tok_cat [TASK_TITLE, ' - Atom Scores'];
+    endif
+    GClearVertexData gkey;
+    GClearTextData gkey;
+
+	// Calculate colors and sphere radii and add alpha channel.
+
+    local colors = get_color_gradient [scores, opt];
+    local radii = get_radius_scores [scores, errs, opt];
+
+    GSetTransparency [gkey, opt.render_sp_transp];
+
+	// A unit sphere is calculated in the coordinate origin (radius == 1).
+	// The unit sphere is multiplied with the relative sphere radius
+	// of the given atom and moved to the atom position.
+
+    local usphere = G_Sphere [0xffffff, [0,0,0], 1, opt.render_quality];
+
+    local gdata = [], i, idata, apos, color;
+    for i in x_id scores loop
+	apos = aPos lig(i);
+	color = colors(i);
+	idata = usphere;
+	idata(3) = rep [color, length idata(3)];// poke color
+	idata(4) = idata(4) * radii(i) + apos; // scale/move unit sphere
+	gdata(i) = idata;
+	if istrue labels(i) then
+	    GText cat [gkey, color, apos, labels(i)];
+	endif
+    endloop
+    gdata = G_Cat_basic gdata;
+    GVertex cat [gkey, gdata];
+
+    return gkey;
+endfunction
+
+//==============================================================================
+// GUI functions.
+local function render_los [gkey, inter, flag, opt]
+    if not flag then
+	GClose gkey;
+	return [];
+    endif
+
+    if istrue GKey gkey then
+	GClearVertexData gkey;
+    else
+	gkey = GOpen0 tok_cat [TASK_TITLE, ' - Line of Sight'];
+    endif
+
+    local len = l_length inter;
+
+    local gdata = [
+	rep [2, len],
+	cat tr ([igen len] + [0, len]),
+	rep [opt.render_color_dbg, 2 * len],
+	aPos cat inter
+    ];
+    GVertex cat [gkey, gdata];
+
+    return gkey;
+endfunction
+
+local function render_alabels [akeys, labels, flag, opt]
+    labels = tok_cat ['<#', int2hex opt.render_color_dbg, '>', labels, '</#>'];
+
+    if flag then
+	aSetLabel [akeys, labels];
+#ifbif aSetLabelHidden
+	aSetLabelHidden [akeys, 0];
+    else
+	aSetLabelHidden [akeys, 1];
+#else
+    else
+	aSetLabel [akeys, ''];
+#endif
+    endif
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Interactions_Monitor: GUI main function.
+local function apply_settings [wkey, val]
+    // getRC: Get the saved config.
+    function getRC []
+	local rc = GetRC RC_NAME;
+	if isnull rc then return []; endif// not set
+	rc = r64_decode string rc;
+	local [vec, code] = task_call [
+	    'sread', [rc, '{v:}'], [errmsg: 'ignore']
+	];
+	if neL [code, ''] then
+	    Warning 'Corrupted config data';
+	    return [];
+	endif
+	local rcval = cat first vec;
+	if not istagged rcval then return []; endif
+	return rcval;
+    endfunction
+
+    local state = 0;//by default: no rerender
+
+	// Init:
+	// - apply saved settings to window (fallback = defaults)
+	// Save:
+	// - save current window settings
+	// Get:
+	// - apply saved settings to window (fallback = no action)
+	// Reset:
+	// - clear saved settings
+	// - apply default settings to window
+
+    if val.config === 0 then// init
+	local rcval = getRC [];
+	rcval = tagcat [rcval, DEFAULTS.gui_defaults];
+
+    elseif val.config === 1 then// save
+	rcval = tagjoin [val, tags DEFAULTS.gui_defaults];
+	local rc = r64_encode swrite ['{v}', rcval];
+	SetRC [RC_NAME, token rc];
+
+    elseif val.config === 2 then// get
+	rcval = getRC [];
+
+    elseif val.config === 3 then// reset
+	DelRC RC_NAME;
+	rcval = DEFAULTS.gui_defaults;
+
+    endif
+
+	// If not in save mode - set the widget states.
+
+    if neL [val.config, 1] then
+	val = tagcat [rcval, val];
+	WindowSetData [wkey, rcval];
+	WindowSetAttr [wkey, [
+	    interact_opt: [sensitive: istrue val.render_interact],
+	    score_opt	: [sensitive: istrue val.render_scores	]
+	]];
+	state = 3;//refilter and rerender
+    endif
+
+    return [val, state];
+endfunction
+
+
+const SCRLB_HEADER =
+    'Lig. Atom{+n}\tRF Score{.n}\tGroup RFs'
+    '\tScore Error\tGroup Errors{.n}';
+const SCRLB_HEADER_HB =
+    'Ligand atom.\t'
+    'Ligand atom score based on the RF interactions.\t'
+    'Total error of score.'
+;
+#if DEBUG_PANEL
+const INTLB_HEADER =
+    'atom1{+n}\tatom2{+n}\tlig. atype\trec. atype\t'
+    'rec_a{n}\trec_h{.n}\tlig_a{n}\tlig_h{.n}\t'
+    'rf_total{.n}\trf_rec{.n}\trf_lig{.n}\t'
+    'rf_rec_a{.n}\trf_rec_h{.n}\trf_lig_a{.n}\trf_lig_h{.n}\t'
+    'err_total{.n}\terr_rec{.n}\terr_lig{.n}\t'
+    'err_rec_a{.n}\terr_rec_h{.n}\terr_lig_a{.n}\terr_lig_h{.n}\t'
+    'distance{.n}\tVdW dist.{.n}\tInteraction\t'
+    'Primary\tInt. group'
+;
+const INTLB_HEADER_BH = '';
+#else
+const INTLB_HEADER =
+    'RF{.n}\terror{.n}\tdist.{.n}\tVdW dist.{.n}';
+const INTLB_HEADER_BH =
+    'RF value of this interaction.\t'
+    'Statistical uncertainty of the RF value.\t'
+    'Distance of the interaction in Angstrom.\t'
+    'Distance of the interaction minus the VdW radii in Angstrom.'
+;
+#endif
+const INT_LABELS = ['None', 'RF', 'Uncertainty', 'Distance', 'Interaction type'];
+const SCR_LABELS = ['None', 'RF', 'Uncertainty'];
+const PANEL = [
+    text: 'Cancel',
+    onTrigger: 'return', name: 'shell', title: TASK_TITLE,
+    Radio: [
+	name: 'pager_radio', onTrigger: 'return', type: 'int', extendH: 1,
+	flushLeft: 1, text: ['Scores', 'Interactions']
+    ],
+    Pager: [
+	name: 'pager', extendH: 1, extendV: 1, flushLeft: 1,
+	Vbox: [
+	    extendH: 1, extendV: 1,
+	    Listbox: [
+		name: 'scr_lb', extendH: 1, extendV: 1, flushLeft: 1, type: 'int',
+		onTrigger: 'return', multiSelect: 1, zebra: 1, sortEnable: 1,
+		header: SCRLB_HEADER, headerBubbleHelp: '//?',
+		width: 53
+	    ]
+	],
+	Vbox: [
+	    extendH: 1, extendV: 1,
+	    Listbox: [
+		name: 'int_lb', extendH: 1, extendV: 1, flushLeft: 1, type: 'int',
+		onTrigger: 'return', multiSelect: 1, zebra: 1, sortEnable: 1,
+		header: INTLB_HEADER, headerBubbleHelp: INTLB_HEADER_BH,
+		width: 53
+	    ]
+	]
+    ],
+    Checkbox: [
+	name: 'render_interact', title: 'Interactions:', text: 'Enable',
+	onTrigger: 'return',
+	bubbleHelp: 'Render colored lines to visualize'
+	    '\nthe ligand-receptor interactions.'
+    ],
+    Vbox: [
+	name: 'interact_opt', extendH: 1,
+	Radio: [
+	    name: 'ilabels', title: 'Labels:', extendH: 1,
+	    onTrigger: 'return', text: INT_LABELS,
+	    bubbleHelp: 'Label interactions by RF, statistical'
+		' uncertainty or distance (Angstrom).'
+	],
+	Scale: [
+	    name: 'RF_neg', extendH: 1, len: 4, title: 'RF-:',
+	    range: [0,100,0.01], value: 0, onTrigger: 'return',
+	    bubbleHelp: 'Show unfavourable interactions'
+		' with RF < 1 - n, only.'
+	],
+	Scale: [
+	    name: 'RF_pos', extendH: 1, len: 4, title: 'RF+:',
+	    range: [0,100,0.01], value: 0, onTrigger: 'return',
+	    bubbleHelp: 'Show favourable interactions'
+		' with RF > 1 + n, only.'
+	]
+    ],
+    Separator: [flushLeft: 1, extendH: 1],
+    Checkbox: [
+	name: 'render_scores', title: 'Scores:', text: 'Enable',
+	onTrigger: 'return',
+	bubbleHelp: 'Render colored spheres to'
+	    ' visualize the ligand atom scores.'
+    ],
+    Vbox: [
+	name: 'score_opt', extendH: 1,
+	Radio: [
+	    name: 'slabels', title: 'Labels:', extendH: 1,
+	    onTrigger: 'return', text: SCR_LABELS,
+	    bubbleHelp: 'Label interactions by RF, statistical'
+		' uncertainty or distance (Angstrom).'
+	]
+    ],
+    Separator: [flushLeft: 1, extendH: 1, collapse: isfalse DEBUG_PANEL],
+    Hbox: [
+	collapse: isfalse DEBUG_PANEL,
+	Checkbox: [
+	    name: 'llabel', text: 'Ligand Type ', title: 'Labels:',
+	    onTrigger: 'return'
+	],
+	Checkbox: [
+	    name: 'rlabel', text: 'Protein Type ', onTrigger: 'return'
+	],
+	Checkbox: [
+	    name: 'los', text: ' Line-of-Sight', onTrigger: 'return'
+	]
+    ],
+    Separator: [flushLeft: 1, extendH: 1],
+    Hbox: [
+	extendH: 1,
+// 	Label: [extendH: 1],
+	Button: [
+	    name: 'config', type: 'int',
+	    title: 'Settings:',
+	    text: ['Save', 'Apply', 'Reset'],
+	    bubbleHelp:
+		'Save/Restore panel settings:\n'
+		'1) Save current settings.\n'
+		'2) Apply saved settings.\n'
+		'3) Restore default settings.'
+	]
+    ]
+];
+
+// OLD_MOE: There is a bug in the WT of MOE < 2020 that is bypassed using this
+// constant. Details see below.
+const OLD_MOE = MOE_VERSION < 2020;
+// RF_Interactions_Monitor: GUI and monitor function.
+local function RF_Interactions_Monitor [dvar, opt]
+    task_settitle [-1, TASK_TITLE];
+    task_prio 5;
+
+    const TTOK = 'TIMING: {t:-25}: {n:f.4} sec\n';
+
+    local msg = Message [0, 'RF interactions running ...'];
+
+    local t = clock [];
+    local [res, err] = RF_Interactions_GetLookupData [dvar, opt];
+    if err === 'error' then exit res; endif
+    dvar = res;
+    dwrite [TTOK, 'Get Data', clock [] - t];
+
+    local wkey = WindowCreate PANEL;
+    WindowSetAttr [wkey, [
+	RF_pos: [range: [0, dec SLIDER_MAX_RF * 100, 0.01]],
+	interact_opt: [sensitive: opt.gui_defaults.render_interact],
+	score_opt: [sensitive: opt.gui_defaults.render_scores]
+    ]];
+    local render_interact = istrue opt.gui_defaults.render_interact;
+    apply_settings [wkey, [config: 0]];
+    WindowShow [wkey, opt.show_gui];
+
+	// state =
+	// 0 - <unset>
+	// 1 - reset nviewstate and continue
+	// 2 - rerender
+	// 3 - refilter + state 2
+	// 4 - recalculate interactions + state 3
+	// 5 - retype ligand and protein atoms + state 4
+
+#if OLD_MOE
+    local scaleval;
+    local scaleval_old = tagget [WindowValues wkey, ['RF_pos', 'RF_neg']];
+#endif
+
+    local val, trig, sel_akeys, sel_idx, trig_is_inter;
+    local nrstate_old, nrstate, topstate_old, topstate, nrstate2, nrstate2_old;
+    local gstate, gstate_old, asel, asel_old = 0;
+    local state;
+    local akeys, lig, rec, lig_atypes, rec_atypes;
+    local all_inter, inter_atypes;
+    local inter, atyp, rfs, errs, lb_lines, dist, int_type, data;
+    local rf_filter, labels, f_inter, f_rfs, f_errs, f_lb_lines, f_dist, f_int_type;
+    local pr_data, ilig_data, is_primary, inter_group, ilig_akeys, ilig_groups;
+    local ilig_scores, ilig_gscores, ilig_errs, ilig_gerrs;
+    local score_lb_lines, f_is_primary, f_int_group;
+    local sel_gr, min_rf, max_rf, ilabelby, slabelby;
+    local gkey, gkey_int, gkey_los, gkey_scr;
+    local rndr_rlabel = 0, rndr_llabel = 0, rndr_los = 0;
+    loop
+	task_prio 5;//reset prio to low
+	[val, trig] = WindowWait [wkey, [timeout: opt.monitor_throttle]];
+
+	state = 0;
+
+	if trig === 'shell' and val.shell === 'Cancel' then
+	    break;
+
+	elseif trig === 'config' then
+	    [val, state] = apply_settings [wkey, val];
+
+	elseif trig === 'pager_radio' then
+	    WindowSetData [wkey, [pager: val.pager_radio]];
+
+	elseif trig === 'ilabels' or trig === 'slabels' then
+	    state = 2;// force re-rendering
+
+	elseif trig === 'RF_neg' or trig === 'RF_pos' then
+#if OLD_MOE
+	    scaleval_old = tagget [val, ['RF_pos', 'RF_neg']];
+#endif
+	    state = 3;
+
+	    // Checkbox to enable/disable rendering of scores or interactions.
+
+	elseif trig === 'render_interact' or trig === 'render_scores' then
+	    trig_is_inter = trig === 'render_interact';
+	    if trig_is_inter then
+		render_interact = val.render_interact;
+	    endif
+	    if val.(trig) then
+		state = 2;
+		if trig_is_inter then
+		    gstate_old = [];
+		endif
+	    else
+		gkey = select [[gkey_int], [gkey_scr], trig_is_inter];
+		GClearVertexData gkey;
+		GClearTextData gkey;
+		state = 1;
+	    endif
+	    WindowSetAttr [wkey, tag [
+		select ['interact_opt', 'score_opt', trig_is_inter],
+		[[sensitive: val.(trig)]]
+	    ]];
+
+	    // Checkboxes to show atom types or LoS interactions
+
+	elseif trig === 'rlabel' then
+	    rndr_rlabel = val.rlabel;
+	    render_alabels [rec, rec_atypes, rndr_rlabel, opt];
+	    state = 1;
+
+	elseif trig === 'llabel' then
+	    rndr_llabel = val.llabel;
+	    render_alabels [inter(1), atyp(1), rndr_llabel, opt];
+	    state = 1;
+
+	elseif trig === 'los' then
+	    rndr_los = val.los;
+	    gkey_los = render_los [gkey_los, all_inter, rndr_los, opt];
+	    state = 1;
+
+	    // Listbox selection event.
+
+	elseif trig === 'int_lb' then
+	    if istrue val.render_interact then
+		gstate = __GSelected gkey_int;
+		gstate_old = put [zero gstate, val.int_lb(1), 1];
+		__GSetSelected [gkey_int, gstate_old];
+		aSetSelected [Atoms [], 0];
+		aSetSelected [cat apt get [f_inter, [val.int_lb(1)]], 1];
+	    endif
+	    state = 1;
+
+	elseif trig === 'scr_lb' then
+	    sel_akeys = get [ilig_akeys, val.scr_lb(1)];
+	    if anyfalse oValid sel_akeys then
+		state = 5;
+	    else
+		aSetSelected [Atoms [], 0];
+		aSetSelected [sel_akeys, 1];
+		state = 1;
+	    endif
+
+#if OLD_MOE
+	    // In MOE < 2020 there is the issue that manipulating the
+	    // Scale widget using the text box will not send a window trigger.
+	    // This hack monitors the values of the Scale widgets.
+
+	elseif isnull trig then
+	    val = WindowValues wkey;
+	    scaleval = tagget [val, ['RF_pos', 'RF_neg']];
+	    if neL [scaleval, scaleval_old] then
+		scaleval_old = scaleval;
+		state = 3;
+	    endif
+#endif
+
+	endif
+
+		// Graphics and atom selection events.
+
+	if istrue GKey gkey_int and istrue render_interact then
+	    gstate = __GSelected gkey_int;
+	    if neL [gstate, gstate_old] then
+		gstate_old = gstate;
+		WindowSetData [wkey, [int_lb: x_pack gstate]];
+	    endif
+	endif
+
+	asel = SelectedAtoms [];
+	if neL [asel, asel_old] then
+	    asel_old = asel;
+	    WindowSetData [wkey, [scr_lb: pack indexof [asel, ilig_akeys]]];
+	endif
+
+	    // General monitor.
+
+	nrstate	 = SystemNonrenderState [];
+	topstate = SystemTopologyState [];
+
+	if state === 1 then
+	    nrstate_old = nrstate;// reset nrstate
+	    continue;
+	elseif neL [topstate, topstate_old] then// topology changed
+	    state = 5;
+	elseif neL [nrstate, nrstate_old] then// sth. else changed
+	    state = 4;
+	elseif not state then
+	    continue;
+	endif
+
+	    // SystemNonrenderState does not trigger if atom class changed
+	    // because of sets Ligand, Receptor etc.!!!
+
+	dwrite2 ['GUI state: {n:}\n', state];
+
+	    // If captured by window loop timeout vals be [] by default.
+
+	if isnull trig then
+	    val = WindowValues wkey;
+	endif
+
+	task_prio 1;// elevate prio to avoid external interference
+
+	    // Retype Receptor atoms.
+
+	local syskey = SystemPush PublicChains [];
+
+	if state === 5 then
+	    akeys = cat cAtoms PublicChains [];
+	    rec = akeys | aClassRLS akeys == 'rec' or aClassRLS akeys == 'sol';
+	    lig = akeys | aClassRLS akeys == 'lig';
+
+	    t = clock [];
+	    lig_atypes = type_atoms [dvar, 'lig', lig];
+	    dwrite [TTOK, 'Type Ligand', clock [] - t];
+	    t = clock [];
+	    rec_atypes = type_atoms [dvar, 'rec', rec];
+	    dwrite [TTOK, 'Type Receptor', clock [] - t];
+
+	endif
+
+	    // Get interactions.
+	    // Calculate RFs.
+	    // Render LoS (if requested).
+
+	if state >= 4 then
+	    t = clock [];
+	    all_inter = interaction_pairs [lig, rec, opt];
+	    dwrite [TTOK, 'Get Interactions', clock [] - t];
+
+	    t = clock [];
+	    inter_atypes = type_interactions [
+		all_inter, lig, rec, lig_atypes, rec_atypes
+	    ];
+	    dwrite [TTOK, 'Type Interactions', clock [] - t];
+
+	    t = clock [];
+	    data = RF_Interactions_Calc [dvar, all_inter, inter_atypes];
+	    dwrite [TTOK, 'Calculate RFs/Err', clock [] - t];
+
+	    t = clock [];
+	    [pr_data, ilig_data] = RF_Interactions_Scores data;
+	    dwrite [TTOK, 'Calculate Atom Scores', clock [] - t];
+
+	    [inter, atyp, rfs, errs, lb_lines, dist, int_type] = data;
+	    [is_primary, inter_group] = pr_data;
+	    [
+		ilig_akeys, ilig_groups, ilig_scores,
+		ilig_gscores, ilig_errs, ilig_gerrs
+	    ] = ilig_data;
+
+	    if rndr_los then
+		gkey_los = render_los [gkey_los, all_inter, rndr_los, opt];
+	    endif
+	endif
+
+	    // Apply RF filter to all values
+
+	if state >= 3 then
+	    [min_rf, max_rf] = [1 - val.RF_neg, 1 + val.RF_pos];
+
+	    rf_filter = rfs <= min_rf or rfs >= max_rf;
+	    f_inter	= inter		|| [rf_filter];
+	    f_rfs	= rfs		| rf_filter;
+	    f_errs	= errs		| rf_filter;
+	    f_lb_lines	= lb_lines	| rf_filter;
+	    f_dist	= dist		| rf_filter;
+	    f_int_type	= int_type	| rf_filter;
+#if DEBUG_PANEL
+	    f_is_primary= is_primary	| rf_filter;
+	    f_int_group	= inter_group	| rf_filter;
+	    f_is_primary= select ['X', '', f_is_primary];
+	    f_lb_lines	= apt twrite [
+		'{}{}\t{}', f_lb_lines, f_is_primary, f_int_group
+	    ];
+
+#endif
+	    WindowSetAttr [wkey, [int_lb: [text: f_lb_lines]]];
+	    WindowSetData [wkey, [int_lb: []]];
+
+	    score_lb_lines = apt twrite [
+		'{}\t{}\t{}\t{}\t{}',
+		aName ilig_akeys,
+		ilig_scores,
+		apt twrite ['{| }', ilig_gscores],
+		ilig_errs,
+		apt twrite ['{| }', ilig_gerrs]
+	    ];
+	    WindowSetAttr [wkey, [scr_lb: [text: score_lb_lines]]];
+	endif
+
+	    // state >= 3
+	    // - get interaction labels
+	    // - render lines and labels
+
+	ilabelby = val.ilabels;
+	labels = apt twrite [
+	    '{n:f.2}',
+	    cat ([[], f_rfs, f_errs, f_dist, f_int_type] | ilabelby==INT_LABELS)
+	];
+
+	if val.render_interact then
+	    t = clock [];
+	    gkey_int = RF_Interactions_Render [
+		gkey_int, f_inter, f_rfs, f_errs, labels, opt
+	    ];
+	    dwrite [TTOK, 'Render Interactions', clock [] - t];
+	    if GKey gkey_int then
+		gstate = put [zero __GSelected gkey_int, val.int_lb(1), 1];
+		__GSetSelected [gkey_int, gstate];
+	    endif
+	endif
+
+	slabelby = val.slabels;
+	labels = apt twrite [
+	    ' {n:f.2}',
+	    cat ([[], ilig_scores, ilig_errs] | slabelby == SCR_LABELS)
+	];
+
+	if val.render_scores then
+	    t = clock [];
+	    gkey_scr = RF_Scores_Render [
+		gkey_scr, ilig_akeys, ilig_scores, ilig_errs, labels, opt
+	    ];
+	    dwrite [TTOK, 'Render Scores', clock [] - t];
+	endif
+
+	SystemPop syskey;
+
+	nrstate_old  = nrstate;
+	topstate_old = topstate;
+	nrstate2_old = nrstate2;
+    endloop
+
+    WindowShow [wkey, 0];
+    WindowDestroy wkey;
+    exit [];
+endfunction
+
+//------------------------------------------------------------------------------
+// Wrapper that implements the toggle button.
+global function RF_Interactions_Button opt
+
+	// If an instance of the monitor is already running - kill it
+	// (toggle off).
+
+    local tlist = task_keylist [];
+    local tkey = tlist | m_join [task_title tlist, TASK_TITLE];
+
+    if istrue tkey then
+	task_kill tkey;
+	return;
+    endif
+
+	// Automatically enable clash rendering in MOE.
+
+    local clash_flag = DrawVDWContacts 1;
+    local clash_opt = (ViewSetup [nb_clash_enable: NB_CLASH]).nb_clash_enable;
+    local clash_lp  = (ViewSetup [nb_clash_lp: 0]).nb_clash_lp;
+
+	// Start the monitor process as a child task.
+	// The parent task is unamed and cleans up when the monitor is
+	// terminated (killed/crashed).
+
+    opt = tagcat [opt, DEFAULTS];
+
+    local dvar = dvar_open TASK_TITLE;
+    task_call [#RF_Interactions_Monitor, [dvar, opt],
+	[master: 'parent', creator: 'blockEOK']
+    ];
+
+	// Reset the clash rendering.
+
+    DrawVDWContacts clash_flag;
+    ViewSetup [nb_clash_lp: clash_lp];
+    ViewSetup [nb_clash_enable: clash_opt];
+
+    dvar_close dvar;
+endfunction
+
+//==============================================================================
+local function gen_PLIFraw [inter_data, l_akeys_all, opt]
+    local [inter, atyp, rfs, errs, lb_lines, dist, int_type] = inter_data;
+    local [l_akeys, r_akeys] = inter;
+
+	// Get unique residues.
+
+    local r_rkeys	= aResidue r_akeys;
+    local r_rkeys_u	= uniq r_rkeys;
+    local r_ruid	= rUID r_rkeys_u;
+    local r_idx		= x_sort r_ruid;
+
+    r_rkeys_u		= r_rkeys_u[r_idx];
+    r_ruid		= r_ruid[r_idx];
+
+	// Calculate the log2 of the RFs per residue.
+
+    local [r_s, r_c]	= sac r_rkeys;
+    local a_rfs		= split [rfs[r_s], r_c];
+    local r_rfs	  	= log2 app mul a_rfs;
+
+    local rl_akeys	= app uniq split [l_akeys[r_s], r_c];
+    local l_idx		= apt indexof [rl_akeys, [l_akeys_all]];
+
+    return [
+	PLIF_raw : swrite ['{v}', [l_idx, r_ruid, r_rfs]],
+	PLIF_lig : mol_Extract l_akeys_all
+    ];
+endfunction
+
+local function gen_PLIF [mdb, opt]
+    local ekey = 0, plif_raw_str, plif_raw, lidx, ruid, rfs;
+    local plif_sign;
+    local all_plifs = [];
+    while ekey = db_NextEntry [mdb, ekey] loop
+	plif_raw_str = first db_ReadFields [mdb, ekey, 'PLIF_raw'];
+	plif_raw = first first sread [plif_raw_str, '{v}'];
+	[lidx, ruid, rfs] = plif_raw;
+
+	[lidx, ruid, rfs] =
+	    [lidx, ruid, rfs] || [abs rfs > opt.plif_cutoff];
+	plif_sign = rfs < 0;
+
+	all_plifs = cat [all_plifs, tr [ruid, plif_sign]];
+    endloop
+
+    all_plifs = sort uniq all_plifs;
+    local all_plifs_tr = tr all_plifs;
+
+    local plif_type = mput [one all_plifs_tr(2), all_plifs_tr(2), 5];
+
+    db_SetEnv [mdb, 'PLIF_Bits', twrite ['{v}', [all_plifs_tr(1), plif_type]]];
+    db_SetEnv [mdb, 'PLIF_Params', twrite ['{v}', [
+	lig_db	: 'PLIF_lig',
+	pro_db	: opt.db_molfield,
+	pro_source: 2
+    ]]];
+
+
+    local plif;
+    while ekey = db_NextEntry [mdb, ekey] loop
+	plif_raw_str = first db_ReadFields [mdb, ekey, 'PLIF_raw'];
+	plif_raw = first first sread [plif_raw_str, '{v}'];
+	[lidx, ruid, rfs] = plif_raw;
+
+	[lidx, ruid, rfs] =
+	    [lidx, ruid, rfs] || [abs rfs > opt.plif_cutoff];
+	plif_sign = rfs < 0;
+
+	plif_raw = tr [ruid, plif_sign];
+	plif = indexof [plif_raw, all_plifs];
+	db_Write [mdb, ekey, [
+	    'FP:PLIF'	 : plif,
+	    'PLIF_ligidx': swrite ['{v}', lidx]
+	]];
+    endloop
+endfunction
+
+//------------------------------------------------------------------------------
+// RF_Interactions_Database: Calculate RF interactions of ligands in
+// a database to the receptor in MOE.
+global function db_RF_Interactions [mdb, opt]
+print mdb;
+    opt = tagcat [opt, DEFAULTS];
+
+    const TTOK = 'TIMING: {t:-25}: {n:f.4} sec\n';
+
+    	// Read the CSV lookup files.
+
+    local t = clock [];
+
+    local dvar = dvar_open TASK_TITLE;
+    local [res, err] = RF_Interactions_GetLookupData [dvar, opt];
+    if err === 'error' then exit res; endif
+
+    dwrite [TTOK, 'Get Data', clock [] - t];
+
+    if isnull mdb then
+	print "nice2";
+	mdb = dbv_DefaultView [];
+    endif
+    mdb = db_Open [mdb, 'read-write'];
+
+	// Get the input database field and field type.
+
+    local dbf = db_Fields mdb;
+
+	// Check ligand field.
+
+    local dbf_idx = indexof [opt.db_ligfield, dbf(1)];
+    if not dbf_idx then
+	local msg = twrite [
+	    'Database {t:} does not contain a field {t:}.',
+	    db_Filename mdb, opt.db_ligfield
+	];
+	write ['{}\n', msg];
+	exit msg;
+    endif
+    local dbft_lig = dbf(2)(dbf_idx);
+    if m_diff [dbft_lig, ['molecule', 'moe']] then
+	msg = twrite [
+	    'Database field {t:} is not of type \'molecule\' or \'moe\'.',
+	    opt.db_ligfield
+	];
+	write ['{}\n', msg];
+	exit msg;
+    endif
+
+	// If receptor is in database: check database field.
+	// If receptor in MOE: type receptor atoms.
+
+    local rec_in_moe = isfalse opt.db_recfield;
+// Receptor in MOE is not recognized
+rec_in_moe = 1;
+    if not rec_in_moe then
+	local rec_in_ligfield = opt.db_ligfield === opt.db_recfield;
+	if not rec_in_ligfield then
+	    dbf_idx = indexof [opt.db_recfield, dbf(1)];
+	    if not dbf_idx then
+		msg = twrite [
+		    'Database {t:} does not contain a field {t:}.',
+		    db_Filename mdb, opt.db_recfield
+		];
+		write ['{}\n', msg];
+		exit msg;
+	    endif
+	    local dbft_rec = dbf(2)(dbf_idx);
+	    if m_diff [dbft_rec, ['molecule', 'moe']] then
+		msg = twrite [
+		    'Database field {t:} is not of'
+		    ' type \'molecule\' or \'moe\'.',
+		    opt.db_recfield
+		];
+		write ['{}\n', msg];
+		exit msg;
+	    endif
+	endif
+    else
+	local akeys = cat cAtoms PublicChains [];
+	akeys = akeys | not aInert akeys;
+	local rec = akeys | m_join [aClassRLS akeys, ['rec', 'sol']];
+
+	t = clock [];
+	local rec_atypes = type_atoms [dvar, 'rec', rec];
+	dwrite [TTOK, 'Type Receptor', clock [] - t];
+    endif
+
+	// Create the output fields.
+
+    local [fn_pos, fn_neg, fn_scr] = tagget [opt,
+	['db_posfield', 'db_negfield', 'db_atomscores']
+    ];
+	local bin1_label = 'RF [0,0.3]';
+	local bin2_label = 'RF [0.3,0.5]';
+	local bin3_label = 'RF [0.5,0.7]';
+	local bin4_label = 'RF [0.7,0.9]';
+	local bin5_label = 'RF [0.9,1.1]';
+	local bin6_label = 'RF [1.1,1.3]';
+	local bin7_label = 'RF [1.3,1.5]';
+	local bin8_label = 'RF [1.5,1.7]';
+	local bin9_label = 'RF [1.7,inf]';
+    apt db_EnsureField cat [mdb, tr [
+	[fn_pos		, 'int'		],
+	[fn_neg		, 'int'		],
+	[bin1_label		, 'int'],
+	[bin2_label		, 'int'],
+	[bin3_label		, 'int'],
+	[bin4_label		, 'int'],
+	[bin5_label		, 'int'],
+	[bin6_label		, 'int'],
+	[bin7_label		, 'int'],
+	[bin8_label		, 'int'],
+	[bin9_label		, 'int'],
+	[fn_scr		, 'float'	],
+	['PLIF_raw'	, 'char'	],
+	['PLIF_ligidx'	, 'char'	],
+	['PLIF_lig'	, 'molecule'	],
+	['FP:PLIF'	, 'int'		]
+    ]];
+
+    local syskey = SystemPush rec;
+    aSetHidden [rec, 0];
+
+    local ekey = 0, mol, ckeys_rec, ckeys_lig, lig, i = 0;
+    local lig_atypes, inter, inter_atypes;
+    local data, atyp, rfs, errs, lb_lines, dist, pr_data, ilig_data, int_type;
+    local ilig_akeys, ilig_groups, ilig_scores;
+    local ilig_gscores, ilig_errs, ilig_gerrs;
+    local sig_pos, sig_neg, ilig_idx, ilig_scores_ordered;
+    local plif_data;
+    while ekey = db_NextEntry [mdb, ekey] loop
+	i = inc i;
+
+	    // Read the ligand molecule from database and create it.
+
+	t = clock [];
+
+	mol = first db_ReadFields [mdb, ekey, opt.db_ligfield];
+	if dbft_lig === 'molecule' then
+	    ckeys_lig = mol_Create mol;
+	elseif dbft_lig === 'moe' then
+	    ckeys_lig = first moe_CreateBasic mol;
+	endif
+	akeys = cat cAtoms ckeys_lig;
+	lig = akeys | aClassRLS akeys == 'lig';
+
+	if not rec_in_moe then
+	    mol = first db_ReadFields [mdb, ekey, opt.db_recfield];
+	    if dbft_lig === 'molecule' then
+		ckeys_rec = mol_Create mol;
+	    elseif dbft_lig === 'moe' then
+		ckeys_rec = first moe_CreateBasic mol;
+	    endif
+	    akeys = cat cAtoms ckeys_rec;
+	    rec = akeys | m_join [aClassRLS akeys, ['rec', 'sol']];
+
+	    t = clock [];
+	    rec_atypes = type_atoms [dvar, 'rec', rec];
+	    dwrite [TTOK, 'Type Receptor', clock [] - t];
+	endif
+
+	    // Type the ligand.
+
+	lig_atypes = type_atoms [dvar, 'lig', lig];
+	dwrite [TTOK, 'Type Atoms', clock [] - t];
+
+	    // Search for LoS interactions.
+	    // Calculate RF and RF_err.
+
+	t = clock [];
+	inter = interaction_pairs [lig, rec, opt];
+	dwrite [TTOK, 'Get Interactions', clock [] - t];
+
+	t = clock [];
+
+	inter_atypes = type_interactions [
+	    inter, lig, rec, lig_atypes, rec_atypes
+	];
+	dwrite [TTOK, 'Type Interactions', clock [] - t];
+
+	t = clock [];
+	data = RF_Interactions_Calc [dvar, inter, inter_atypes];
+	dwrite [TTOK, 'Calculate RFs/Err', clock [] - t];
+
+	t = clock [];
+	[pr_data, ilig_data] = RF_Interactions_Scores data;
+	dwrite [TTOK, 'Calculate Atom Scores', clock [] - t];
+
+	[inter, atyp, rfs, errs, lb_lines, dist, int_type] = data;
+	[
+	    ilig_akeys	, ilig_groups	, ilig_scores,
+	    ilig_gscores, ilig_errs	, ilig_gerrs
+	] = ilig_data;
+
+	    // Count interactions with positive/negative RF outside statistical
+	    // uncertainty.
+
+local bin1 = rfs < 0.3;
+bin1 = add bin1;
+local bin2 = rfs >= 0.3 and rfs < 0.5;
+bin2 = add bin2;
+local bin3 = rfs >= 0.5 and rfs < 0.7;
+bin3 = add bin3;
+local bin4 = rfs >= 0.7 and rfs < 0.9;
+bin4 = add bin4;
+local bin5 = rfs >= 0.9 and rfs < 1.1;
+bin5 = add bin5;
+local bin6 = rfs >= 1.1 and rfs < 1.3;
+bin6 = add bin6;
+local bin7 = rfs >= 1.3 and rfs < 1.5;
+bin7 = add bin7;
+local bin8 = rfs >= 1.5 and rfs < 1.7;
+bin8 = add bin8;
+local bin9 = rfs >= 1.7;
+bin9 = add bin9;
+
+	sig_pos = rfs > 1 /*and (rfs - errs) > 1*/;
+	sig_neg = rfs < 1 /*and (rfs + errs) < 1*/;
+
+	ilig_idx = indexof [ilig_akeys, lig];
+	ilig_scores_ordered = put [one lig, ilig_idx, ilig_scores];
+	
+
+	db_Write [mdb, ekey, tag [
+	    [fn_pos, fn_neg, fn_scr, 
+		 bin1_label,
+		 bin2_label,
+		 bin3_label,
+		 bin4_label,
+		 bin5_label,
+		 bin6_label,
+		 bin7_label,
+		 bin8_label,
+		 bin9_label],
+	    [add sig_pos, add sig_neg, ilig_scores_ordered, 
+		 bin1,
+		 bin2,
+		 bin3,
+		 bin4,
+		 bin5,
+		 bin6,
+		 bin7,
+		 bin8,
+		 bin9]
+	]];
+
+	local plif_raw = gen_PLIFraw [data, lig, opt];
+
+	db_Write [mdb, ekey, plif_raw];
+
+#if DEBUG_WRITE
+	local mask = sig_pos or sig_neg;
+	inter	= inter || [mask];
+	atyp	= atyp || [mask];
+	rfs	= rfs | mask;
+	errs	= errs | mask;
+
+	local anam = app aFullName inter;
+
+	write ['Entry {n:}\n', i];
+	apt write [
+	    '{t:-30} {t:-30} {t:-30} {t:-30} {n:f5.3} {n:f5.3}\n',
+	    anam(1), anam(2), atyp(1), atyp(2), rfs, errs
+	];
+#endif
+
+	oDestroy ckeys_lig;
+	if not rec_in_moe then
+	    oDestroy ckeys_rec;
+	endif
+    endloop
+
+    gen_PLIF [mdb, opt];
+
+    if istrue opt.score_average_file then
+	local scores	= db_ReadColumn [mdb, fn_scr];
+	local n		= length scores;
+	local means	= add scores / n;
+	local sigma	= sqrt (app add sqr (tr scores - means) / dec n);
+	local max_scr	= apt max scores;
+	local min_scr	= apt min scores;
+
+	dwrite [
+	    'mean score: {5| }\n'
+	    'std. dev. : {5| }\n'
+	    'max. score: {5| }\n'
+	    'min. score: {5| }\n',
+	    means, sigma, max_scr, min_scr
+	];
+
+	ekey = db_NextEntry [mdb, ekey];
+	mol = first db_ReadFields [mdb, ekey, opt.db_ligfield];
+	if dbft_lig === 'molecule' then
+	    ckeys_lig = mol_Create mol;
+	elseif dbft_lig === 'moe' then
+	    ckeys_lig = first moe_CreateBasic mol;
+	endif
+	akeys = cat cAtoms ckeys_lig;
+	lig = akeys | aClassRLS akeys == 'lig';
+
+	aSetLabel [lig, apt twrite [
+	    '{n:f4.2}\xc2\xb1{n:f4.2}',
+	    means, sigma, max_scr, min_scr
+	]];
+
+	fwrite_MOE [opt.score_average_file, lig, []];
+
+	oDestroy ckeys_lig;
+    endif
+
+    SystemPop syskey;
+
+    db_Close mdb;
+    dvar_close dvar;
+endfunction
+
+// db_RF_Interactions_GUI: GUI for db_RF_Interactions.
+global function db_RF_Interactions_GUI mdb
+    const REC_IN_MOE = '<Get from MOE>';
+
+    if isnull mdb then
+	mdb = task_getenv 'DB_VIEW';
+    endif
+
+    local wkey = WindowCreate [
+	name: 'shell',
+	title: 'RF interactions PLIF',
+	text: ['OK', 'Cancel'],
+	Hbox: [
+	    extendH: 1,
+	    Text: [
+		name: 'mdbname', title: 'MDB:', sensitive: 0, len: 30,
+		flushLeft: 1, extendH: 1
+	    ],
+	    Button: [
+		name: 'browse', graphics: gr_icon 'open',
+		bubbleHelp: 'Browse for database.'
+	    ]
+	],
+	Hbox: [
+	    extendH: 1,
+	    Option: [
+		name: 'recfield', title: 'Receptor:', extendH: 1,
+		bubbleHelp: twrite [
+		    '{} means the receptor is currently in MOE\n'
+		    'and is the same for all ligands.\n'
+		    'If the receptor and ligand are in the same molecule field'
+		    '\nselect the same field for both "Receptor" and "Ligand".',
+		    REC_IN_MOE
+		]
+	    ],
+	    Option: [name: 'ligfield', title:  ' Ligand:', extendH: 1]
+	]
+    ];
+
+    // trigger_newdb: Update the window if a new database has been picked.
+    function trigger_newdb dbfile
+	local dbf = db_Fields dbfile;
+	local molfields = (dbf(1) | m_join [dbf(2), ['moe', 'molecule']]);
+	WindowSetData [wkey, [mdbname: db_Filename dbfile]];
+	WindowSetAttr [wkey, [
+	    ligfield: [text: molfields],
+	    recfield: [text: cat [REC_IN_MOE, molfields]]
+	]];
+    endfunction
+
+    if notnull mdb then
+	trigger_newdb mdb;
+    endif
+
+    WindowShow [wkey, 1];
+
+    local trig, val, mdb_tmp;
+    loop
+	[val, trig] = WindowWait wkey;
+	if trig === 'shell' then
+	    if val.shell === 'OK' then
+		if anyfalse [mdb, val.ligfield, val.recfield] then
+		    continue;
+		endif
+	    endif
+	    break;
+
+	elseif trig === 'browse' then
+	    mdb_tmp = FilePrompt [
+		title	: 'Pick MDB',
+		mode	: 'open',
+		filter	: '*.mdb'
+	    ];
+	    if isnull mdb_tmp then
+		continue;
+	    elseif not db_Writeable mdb_tmp then
+		Warning 'Not a writeable MDB file.';
+		continue;
+	    endif
+	    mdb = mdb_tmp;
+	    trigger_newdb mdb;
+
+	endif
+    endloop
+
+    WindowShow [wkey, 0];
+    WindowDestroy wkey;
+    if val.shell === 'Cancel' then exit []; endif
+
+    db_RF_Interactions [mdb, [
+	db_ligfield	: val.ligfield,
+	db_recfield	: select ['', val.recfield, val.recfield === REC_IN_MOE]
+    ]];
+
+endfunction
