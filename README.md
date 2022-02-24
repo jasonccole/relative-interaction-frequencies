@@ -68,7 +68,7 @@ Proasis3, version 3.532, © 2010-2020, Desert Scientific Software, Pty Ltd, All 
 ---
 **Calculating new RF statistics**  \
 Requires CSD API 3.0.9 or higher
-- los_csv_to_lsf.py will submit jobs to the Roche LSF queue.
+- los_csv_to_lsf.py will submit jobs to a SLURM or qsub based queue. You will need to adapt the templates for your queuing system.  
 - Atom type definitions should be provided in CSV files. Ligand atom types should be sorted manually. 
 Ligand atom types at the top of the list will be matched first.
 - Input protein-ligand binding sites should be in the "Proasis" format, i.e. central ligand atoms start with _Z, 
