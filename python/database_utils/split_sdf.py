@@ -7,6 +7,9 @@ from rdkit.Chem import AllChem, SaltRemover
 from rdkit.Chem.EnumerateStereoisomers import EnumerateStereoisomers, StereoEnumerationOptions
 from pathlib import Path
 import argparse
+from pathos.multiprocessing import ProcessingPool
+from functools import partial
+Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
 
 ########################################################################################################################
 
@@ -54,16 +57,79 @@ def parse_args():
         action='store_true'
     )
 
+    parser.add_argument(
+        '-np',
+        '--nproc',
+        help='Number of processes.',
+        default=1,
+        type=int
+    )
+
     return parser.parse_args()
 
-'''
-s = Chem.SDMolSupplier('tmp_aligned_3d_sdf_sanitized/ligand_templates_for_mcs_moka.sdf', removeHs=False)
-w = Chem.SDWriter('tmp_aligned_3d_sdf_sanitized/ligand_templates_for_mcs_moka_rdkit.sdf')
-w.SetKekulize(False)
-for m in s:
-    m = Chem.AddHs(m, addCoords=True)
-    w.write(m)
-w.close()'''
+
+def _prepare_molecule(m, args):
+    try:
+        m.GetProp('_Name')
+        remover = SaltRemover.SaltRemover()
+        m2 = remover.StripMol(m)
+
+        if 'SRN' in m2.GetPropsAsDict(includePrivate=True).keys():
+            srn = m2.GetProp('SRN')
+        else:
+            srn = ''
+        if '_Name' in m.GetPropsAsDict(includePrivate=True).keys():
+            m2.SetProp('_Name', m.GetProp('_Name'))
+
+        if args.enumerate_stereo:
+            opts = StereoEnumerationOptions(maxIsomers=9)
+            isomers = tuple(EnumerateStereoisomers(m, options=opts))
+            print('Enumerating stereoisomers...')
+        else:
+            if args.minimize:
+
+                stereocenters = Chem.FindMolChiralCenters(m2, includeUnassigned=True, useLegacyImplementation=False)
+                unassigned_stereocenters = [s[1] for s in stereocenters if '?' in s[1]]
+                if unassigned_stereocenters:
+                    print(srn, ' has unassigned stereo center.')
+                    return
+                else:
+                    isomers = [m2]
+            else:
+                isomers = [m2]
+        for m2 in isomers:
+            if args.minimize:
+                m2 = Chem.AddHs(m2, addCoords=True)  # add hydrogens to preserve stereo info
+                if m2.GetNumAtoms() == 0:
+                    print(f'failed to remove salts for {srn}')
+                    return
+                AllChem.EmbedMolecule(m2, useRandomCoords=True)
+                AllChem.UFFOptimizeMolecule(m2)
+                return m2
+            else:
+                return m2
+    except KeyboardInterrupt:
+        sys.exit()
+    except:
+        return
+
+
+def single_process(subset, w, args):
+    for m in subset:
+        prepared_mol = _prepare_molecule(m, args)
+        if prepared_mol:
+            w.write(prepared_mol)
+    return
+
+
+def multi_process(nproc, subset, w, args):
+    parallel_prepare_molecule = partial(_prepare_molecule, args=args)
+    pool = ProcessingPool(nproc)
+    prepared_mols = pool.map(parallel_prepare_molecule, subset)
+    for prepared_mol in prepared_mols:
+        if prepared_mol:
+            w.write(prepared_mol)
+    return
 
 
 def split_sdf(args):
@@ -107,57 +173,15 @@ def split_sdf(args):
     if subset_mols:
         all_subsets.append(subset_mols)
 
-    # if strucs_per_file == -1:
-    #     all_subsets = all_subsets[0]
-
     for i, subset in enumerate(all_subsets):
         out_path = Path(output)
         out_path = out_path.parent / Path(out_path.stem + f'_{i+1}.sdf')
         w = Chem.SDWriter(str(out_path))
         w.SetKekulize(False)
-        for m in subset:
-            try:
-                remover = SaltRemover.SaltRemover()
-                m2 = remover.StripMol(m)
-
-                if 'SRN' in m2.GetPropsAsDict(includePrivate=True).keys():
-                    srn = m2.GetProp('SRN')
-                else:
-                    srn = ''
-                if args.enumerate_stereo:
-                    opts = StereoEnumerationOptions(maxIsomers=9)
-                    isomers = tuple(EnumerateStereoisomers(m, options=opts))
-                    print('Enumerating stereoisomers...')
-                else:
-                    if args.minimize:
-
-                        stereocenters = Chem.FindMolChiralCenters(m2, includeUnassigned=True, useLegacyImplementation=False)
-                        unassigned_stereocenters = [s[1] for s in stereocenters if '?' in s[1]]
-                        if unassigned_stereocenters:
-                            print(srn, ' has unassigned stereo center.')
-                            continue
-                        else:
-                            isomers = [m2]
-                    else:
-                        isomers = [m2]
-                for m2 in isomers:
-                    if args.minimize:
-                        m2 = Chem.AddHs(m2, addCoords=True)  # add hydrogens to preserve stereo info
-
-                        if m2.GetNumAtoms() == 0:
-                            print(f'failed to remove salts for {srn}')
-                            continue
-                        print(m2.GetProp('_Name'))
-                        AllChem.EmbedMolecule(m2, useRandomCoords=True)
-                        AllChem.UFFOptimizeMolecule(m2)
-                        minimized_mol = m2
-                        w.write(minimized_mol)
-                    else:
-                        w.write(m2)
-            except KeyboardInterrupt:
-                sys.exit()
-            except:
-                continue
+        if args.nproc == 1:
+            single_process(subset, w, args)
+        else:
+            multi_process(args.nproc, subset, w, args)
         w.close()
 
 

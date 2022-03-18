@@ -30,26 +30,6 @@ def submit(output_files, executable):
             if os.path.isfile(duplicate):
                 os.remove(duplicate)
 
-    # if executable in files_with_executable[-1]:
-    #     f = files_with_executable[-1]
-    #     f = os.path.basename(f)
-    #     jobid = f.split('_')[1]
-        # status = sp.check_output(['sacct', '-j', f'{jobid}', '-P', '-n', '-b'])
-        # status = status.decode('utf-8').split('\n')[0].split('|')[-2]
-        # if 'COMPLETED' in status or 'RUNNING' in status or 'PENDING' in status:
-        #     return False
-        # else:
-        #
-        #     for f_2 in output_files:
-        #         if executable == 'contacts' and os.path.isfile(f_2):
-        #             if os.path.isfile(f_2):
-        #                 os.remove(f_2)
-        #         else:
-        #             if executable in f_2 and os.path.isfile(f_2):
-        #                 if os.path.isfile(f_2):
-        #                     os.remove(f_2)
-        #     print('Resubmitting...')
-        #     return True
 
 
 def submit_to_hpc(mode, geometries, protein_atom_types=['']):
@@ -73,51 +53,11 @@ def submit_to_hpc(mode, geometries, protein_atom_types=['']):
             if input_file.is_file():
                 sp.Popen(['bsub', '-w', f'{filter_out}'], stdin=open(input_file, 'r'))
 
-    # else:
-    #     for protein_atom_type in protein_atom_types:
-    #         if mode == 'protein':
-    #             file_ext = f'_{protein_atom_type}'
-    #             folder = protein_atom_type
-    #         else:
-    #             file_ext = ''
-    #             folder = 'query_atom'
-    #
-    #         output_files = glob(f'lsf_output/lsf_*_{mode}_*{file_ext}.out')
-    #
-    #         stats_check = {geometry: False for geometry in geometries}
-    #
-    #         for geometry in geometries:
-    #             if (Path(folder) / Path(f'statistics_{geometry}.csv')).is_file():
-    #                 stats_check[geometry] = True
-    #             elif geometry == 'h' and 'pi' not in protein_atom_type and mode == 'protein':
-    #                 stats_check[geometry] = True
-    #
-    #         if np.prod(list(stats_check.values())) == 1:
-    #             continue
-    #
-    #         if submit(output_files, 'filter'):
-    #             print(os.getcwd().split('/')[-1], mode, 'postprocessing...')
-    #
-    #             lsf_filter = ['sbatch', '--parsable', f'lsf_input_{mode}_filter{file_ext}.sh']
-    #             filter_out = sp.check_output(lsf_filter).rstrip().decode('utf-8')
-    #             print(filter_out)
-    #             for geometry in geometries:
-    #                 dependent_lsf = ['sbatch', f'--dependency=afterany:{filter_out}',
-    #                                      f'lsf_input_{mode}_{geometry}{file_ext}.sh']
-    #                 sp.Popen(dependent_lsf)
-    #
-    #         else:
-    #
-    #             for geometry in geometries:
-    #                 if submit(output_files, geometry):
-    #                     dependent_lsf = ['sbatch', f'lsf_input_{mode}_{geometry}{file_ext}.sh']
-    #                     sp.Popen(dependent_lsf)
-
 
 def parse_args():
     '''Define and parse the arguments to the script.'''
     parser = argparse.ArgumentParser(
-        description='Submit Calculate Rf values on Basel HPC cluster.',
+        description='Submit jobs to calculate Rf statistics on Basel sHPC cluster.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter  # To display default values in help message.
     )
 
