@@ -181,10 +181,7 @@ class Postprocessing(object):
 
     def __init__(self, db, input_folder='output', los_home='', structure_quality_file='structure_quality.csv',
                  angle=False, watmap=False, generate_watermaps=False, search=None, two_dimensional=False,
-                 second_geometry_name=None, protein_atom_types=None, mode='ligand',
-                 smarts_filters=None, protein_atom_types_file='protein_atom_types.csv',
-                 ligand_atom_types_file='ligand_atom_types.csv',
-                 angle_name = 'alpha'):
+                 second_geometry_name=None, mode='ligand', smarts_filters=None,  angle_name='alpha'):
         self.input = input_folder
         self.los_home = los_home
         self.db = db
@@ -216,7 +213,7 @@ class Postprocessing(object):
 
         self.angle_name = angle_name
 
-    def call_p2cq_filter(self, input_folder, resolution_thr=2.5, rscc_thr=0.8, output_extension='_filtered.csv'):
+    def call_p2cq_filter(self, input_folder, resolution_thr=2.5, rscc_thr=0.8):
         """
         Execute p2cq_filter.
         :param resolution_thr: Consider only structures with a resolution <= 2.5.
@@ -224,9 +221,8 @@ class Postprocessing(object):
         :return: Calls p2cq_filter.main()
         """
         filter = p2cq_filter.P2cqFilter(input=input_folder, resolution=resolution_thr, rscc=rscc_thr,
-                                               structure_quality=self.structure_quality, filter_out_cofactor=True,
-                                               mode=self.mode, output_extension=output_extension,
-                                               los_home=self.los_home)
+                                        structure_quality=self.structure_quality, filter_out_cofactor=True,
+                                        mode=self.mode, los_home=self.los_home)
         filter.filter_files()
 
     def angle_dependency(self, n_boot=500, los_input='los_filtered.csv', complex_input='complex_filtered.csv',
