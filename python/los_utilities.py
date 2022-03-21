@@ -19,6 +19,7 @@ import datetime
 import argparse
 from ccdc import molecule, protein
 from pathlib import Path
+from rdkit import Chem
 
 ########################################################################################################################
 
@@ -853,4 +854,22 @@ def get_hit_protein(entry_reader, entry_identifier, rdr, keep_waters=True, keep_
     hit_protein.remove_hydrogens()
     hit_protein = assign_index_to_atom_partial_charge(hit_protein)  # store indices in partial_charge
     return hit_protein
+
+
+def get_rdkit_protein_from_csd_protein(csd_protein):
+    '''
+
+    :return: RDKit molecule with Tripos atom types in properties.
+    '''
+    rdkit_protein = Chem.MolFromMol2Block(csd_protein.components[0].to_string())
+    for c in csd_protein.components[1:]:
+        if c.atoms[0].protein_atom_type == 'Amino_acid':
+            rdkit_component = Chem.MolFromMol2Block(c.to_string())
+        else:
+            rdkit_component = Chem.MolFromMolBlock(c.to_string('sdf'))
+            for atom in c.atoms:
+                rdkit_atom = rdkit_component.GetAtomWithIdx(atom.index)
+                rdkit_atom.SetProp('_TriposAtomName', atom.label)
+        rdkit_protein = Chem.rdmolops.CombineMols(rdkit_protein, rdkit_component)
+    return rdkit_protein
 

@@ -761,8 +761,8 @@ def _contact_df_loop(central_ligand_atoms, ligand_df, close_contact_atoms, prote
     return los_contacts_df
 
 
-def _cut_out_binding_site_by_distance(prot, ligand):
-    bs = prot.BindingSiteFromMolecule(prot, ligand, 4.0, whole_residues=True)
+def _cut_out_binding_site_by_distance(prot, ligand, cutoff=4.0):
+    bs = prot.BindingSiteFromMolecule(prot, ligand, cutoff, whole_residues=True)
     bs_residues = bs.residues
     for r in bs.protein.residues:
         if r not in bs_residues:
@@ -775,15 +775,8 @@ def _cut_out_binding_site_by_residue_df(prot, residues='binding_site_residues.cs
         residues = Path(residues) / Path('binding_site_residues.csv')
     binding_site_residues = pd.read_csv(residues)['residue_identifier'].values
 
-    met713 = False
-    met703 = False
-
     for r in prot.residues:
         residue_identifier = r.identifier
-        if 'MET703' in residue_identifier:
-            met703 = residue_identifier
-        if 'MET713' in residue_identifier:
-            met713 = True
         if residue_identifier.split(':')[1] not in binding_site_residues:
             prot.remove_residue(residue_identifier)
 
@@ -808,15 +801,29 @@ def get_b_factors(pdb_protein_file):
 
 class RfDescriptors(object):
     def __init__(self, csd_protein, csd_ligand):
+        '''
+        Contains DataFrame with RF_total and other assignments.
+        :param csd_protein:
+        :param csd_ligand:
+        >>> from ccdc import protein
+        >>> csd_protein = protein.Protein.from_file('testdata/4mk8_apo.pdb')
+        >>> csd_ligand = io.MoleculeReader('testdata/4mk8_ligand.sdf')[0]
+        >>> csd_ligand.normalise_labels()
+        >>> csd_protein.normalise_labels()
+        >>> describer = RfDescriptors(csd_protein, csd_ligand)
+        >>> describer.los_contacts_df.shape
+        (84, 40)
+        '''
         self.csd_protein = csd_protein
         self.csd_ligand = csd_ligand
         atom_type_path = Path(atom_types.__path__[0])
         self.protein_atom_types_df = pd.read_csv(atom_type_path / 'protein_atom_types.csv', sep='\t')
         self.ligand_atom_types_df = pd.read_csv(atom_type_path / 'ligand_atom_types.csv', sep='\t')
 
+        self.csd_protein.kekulize()
         self.csd_protein.remove_hydrogens()
         self.rdkit_ligand = Chem.MolFromMol2Block(self.csd_ligand.to_string(), removeHs=False)
-        self.rdkit_protein = Chem.MolFromMol2Block(self.csd_protein.to_string())
+        self.rdkit_protein = los_utilities.get_rdkit_protein_from_csd_protein(self.csd_protein)
         self.rdkit_ligand.UpdatePropertyCache()
         Chem.rdmolops.FastFindRings(self.rdkit_ligand)
 
@@ -923,6 +930,8 @@ class CsdDescriptorsFromGold(object):
         docking_results = docking.Docker.Results(docking_settings)
         docked_ligand_reader = docking_results.DockedLigandReader(input_ligand, docking_settings)
         self.csd_ligand_entry = docked_ligand_reader[0]
+        if 'Gold.PLP.Chemscore.Protein.Energy' not in self.csd_ligand_entry.attributes:
+            self.csd_ligand_entry.attributes['Gold.PLP.Chemscore.Protein.Energy'] = 0
         self.input_ligand = input_ligand
 
         # setup protein-ligand-complex

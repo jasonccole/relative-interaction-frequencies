@@ -383,8 +383,7 @@ def is_long_chain(complex_df):
 
 class P2cqFilter(object):
 
-    def __init__(self, input, resolution, rscc, structure_quality, mode, filter_out_cofactor=True, occu=1,
-                 los_home='', output_extension='_filtered.csv'):
+    def __init__(self, input, resolution, rscc, structure_quality, mode, filter_out_cofactor=True, occu=1, los_home=''):
 
         self.input = input
         self.los_home = los_home
@@ -404,7 +403,7 @@ class P2cqFilter(object):
         self.mode = mode
         self.annotation = os.path.join(self.los_home, 'all_annotated_aug2021.csv')
         self.annotation_df = pd.read_csv(self.annotation)
-        self.output_extension = output_extension
+        self.output_extension = '_filtered.csv'
 
     def merge_and_keep_largest_alpha_i(self, los_files):
         '''
@@ -450,10 +449,7 @@ class P2cqFilter(object):
             if self.filter_out_cofactor and ligname in self.cofactor_list:
                 write_to_f_log(identifier, hits, project[identifier], resol[identifier])
                 return False
-            # elif is_glycol(smiles[identifier]):
-            #     return False
-            # elif is_long_chain(smiles[identifier]):
-            #     return False
+
             else:
                 return True
         else:
@@ -477,7 +473,7 @@ class P2cqFilter(object):
                                 (complex_df['molecule_name'].isin(self.high_quality_identifiers)) |
                                 (complex_df['molecule_name'].str.len() != 8)]
         complex_df = complex_df[complex_df['resolution'] <= 2.5]
-###
+
         # select complex with maximal contact surface area for given strucid:smiles combination
         complex_df['STRUCID'] = complex_df['molecule_name'].str.split('_', expand=True)[0].str.lower()
         complex_df['strucid_smiles'] = complex_df['STRUCID'] + ':' + complex_df['ligand_SMILES']
@@ -503,11 +499,11 @@ class P2cqFilter(object):
         complex_df = complex_df.sort_values(['resolution', 'total_surface'],
                                                               ascending=[False, False]).drop_duplicates(
             'project_smiles')
-###
+
         long_chain_ids = is_long_chain(complex_df)
         complex_df = complex_df[complex_df['molecule_name'].isin(long_chain_ids) == False]
 
-###
+
         self.annotation_df = self.annotation_df[
             self.annotation_df['STRUCID'].isin([i.lower().split('_')[0] for i in complex_df['molecule_name'].unique()])]
         self.annotation_df = self.annotation_df.drop(columns=['RESOLUTION', 'UNIP_ID'])
@@ -576,11 +572,3 @@ class P2cqFilter(object):
 
         los_df.to_csv('los_filtered.csv', index=False)
         complex_df.to_csv('complex_filtered.csv', index=False)
-
-
-# def main():
-#     smiles = '[O][C][C]O[C][C]O[C][C]O[C][C]O[C][C]O[C][C]O[C][C][O]'
-#     is_glycol(smiles)
-#
-# if __name__ == "__main__":
-#     main()
